@@ -270,6 +270,41 @@ export function MiniBars({ days, height=64 }) {
   );
 }
 
+/* ── AiVerdict — verdict fonctionnel par IA visuelle ───────────────────── */
+export function AiVerdict({ analysis, compact }) {
+  if (!analysis) return null;
+  const v = analysis.verdict;
+  const color = v === 'pass' ? 'var(--green)' : v === 'fail' ? 'var(--red)' : 'var(--amber)';
+  const label = v === 'pass' ? 'Succès fonctionnel' : v === 'fail' ? 'Échec fonctionnel' : 'Indéterminé';
+
+  if (compact) {
+    return (
+      <span title={analysis.reason} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color, fontWeight: 600 }}>
+        🔎 {label}
+      </span>
+    );
+  }
+  return (
+    <div style={{
+      border: `1px solid color-mix(in srgb, ${color} 32%, transparent)`,
+      background: `color-mix(in srgb, ${color} 8%, transparent)`,
+      borderRadius: 'var(--radius)', padding: '12px 14px', marginBottom: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 13 }}>🔎</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color, letterSpacing: '0.3px' }}>ANALYSE IA VISUELLE — {label.toUpperCase()}</span>
+      </div>
+      {analysis.reason && <div style={{ fontSize: 12.5, color: 'var(--txt2)', lineHeight: 1.5 }}>{analysis.reason}</div>}
+      {analysis.functionalIssue && (
+        <div style={{ fontSize: 12.5, color: 'var(--txt2)', marginTop: 6 }}>
+          <strong style={{ color }}>Problème identifié :</strong> {analysis.functionalIssue}
+        </div>
+      )}
+      {analysis.model && <div style={{ fontSize: 10, color: 'var(--txt3)', fontFamily: 'var(--mono)', marginTop: 8 }}>{analysis.model}</div>}
+    </div>
+  );
+}
+
 /* ── StepBar (wizard) ──────────────────────────────────────────────────── */
 export function StepBar({ current, total, labels=[] }) {
   return (

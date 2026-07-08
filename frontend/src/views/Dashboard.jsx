@@ -6,7 +6,7 @@ import {
 } from '../api';
 import {
   Badge, Btn, Card, SectionTitle, EmptyState, Modal, CodeBlock, Spinner,
-  StatTile, Table, Row, Cell, Toggle, MiniBars, ProgressBar, SkeletonList,
+  StatTile, Table, Row, Cell, Toggle, MiniBars, ProgressBar, SkeletonList, AiVerdict,
 } from '../components';
 
 function fmtDate(iso) {
@@ -483,6 +483,7 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
                     border: '1px solid color-mix(in srgb, var(--red) 30%, transparent)',
                   }}>{r.error || r.output || 'Erreur inconnue'}</pre>
                 )}
+                {r.analysis && <div style={{ marginTop: 8 }}><AiVerdict analysis={r.analysis} /></div>}
                 <ArtifactLinks result={r} />
               </div>
               <span style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>

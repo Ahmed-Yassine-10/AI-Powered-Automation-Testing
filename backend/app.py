@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import uuid
+import base64
 import shutil
 import subprocess
 import tempfile
@@ -60,6 +61,8 @@ OPENROUTER_MODELS = [
     "deepseek/deepseek-chat-v3-0324",
     "openai/gpt-4o-mini",
 ]
+# Modèle multimodal pour l'analyse visuelle du résultat (doit supporter les images).
+OPENROUTER_VISION_MODEL = os.environ.get("OPENROUTER_VISION_MODEL", "openai/gpt-4o-mini")
 
 RUN_TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "120"))
 
@@ -157,6 +160,96 @@ def call_openrouter(prompt: str, temperature: float = 0.0, max_tokens: int = 204
             last_err = str(e)
             continue
     return None, last_err or "Tous les modèles OpenRouter sont indisponibles."
+
+
+def _parse_json_loose(text: str):
+    """Parse un JSON même entouré de texte ou de fences Markdown."""
+    t = clean_llm_script(text or "")
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", t, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def analyze_screenshot(task: str, image_path: Path, pytest_status: str, pytest_output: str = ""):
+    """Verdict fonctionnel par IA visuelle : le LLM juge, à partir de la capture de
+    l'état final et de la description de la tâche, si la fonctionnalité CIBLE s'est
+    comportée correctement — au-delà du simple pass/fail de pytest."""
+    try:
+        data = Path(image_path).read_bytes()
+    except Exception:
+        return None
+
+    data_url = "data:image/png;base64," + base64.b64encode(data).decode()
+
+    prompt = f"""You are a senior QA analyst. Judge whether the TARGET functionality described below
+actually behaved correctly, based on the screenshot of the page's FINAL state after the test ran.
+
+TEST OBJECTIVE (what must be verified):
+{task}
+
+AUTOMATED PYTEST STATUS (secondary signal, may be misleading): {pytest_status}
+PYTEST OUTPUT (truncated):
+{(pytest_output or '')[-800:]}
+
+Rules for the FUNCTIONAL verdict:
+- "pass": the screenshot shows the target functionality behaved exactly as the objective requires.
+- "fail": the screenshot shows the target functionality did NOT behave as required (a real bug),
+  OR the target rule was never actually exercised because the flow was blocked/interrupted for an
+  UNRELATED reason. In that case the target functionality is untested → it is a fail.
+
+Reason about the objective's intent. Example: objective = "creating an account with a phone number
+starting with 0 must be rejected".
+- If the account was created → fail (the forbidden rule is not enforced).
+- If it was rejected specifically because of the phone number → pass.
+- If it was rejected for an unrelated reason (e.g. "email already used") → fail, because the phone-number
+  rule was never actually tested.
+
+Respond ONLY with strict JSON, no markdown:
+{{"verdict": "pass" | "fail", "reason": "<what the screenshot shows, concise>", "functionalIssue": "<the functional problem of the tested feature, empty string if pass>"}}"""
+
+    payload = {
+        "model": OPENROUTER_VISION_MODEL,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }],
+        "temperature": 0.0,
+        "max_tokens": 500,
+    }
+
+    try:
+        resp = requests.post(OPENROUTER_URL, headers=_or_headers(), json=payload, timeout=90)
+        if resp.status_code >= 400:
+            return {"verdict": None, "reason": f"Analyse indisponible (HTTP {resp.status_code}). Le modèle vision '{OPENROUTER_VISION_MODEL}' est-il accessible ?", "functionalIssue": "", "error": True}
+        content = resp.json()["choices"][0]["message"]["content"]
+        parsed = _parse_json_loose(content)
+        if parsed and parsed.get("verdict") in ("pass", "fail"):
+            parsed["model"] = OPENROUTER_VISION_MODEL
+            parsed.setdefault("reason", "")
+            parsed.setdefault("functionalIssue", "")
+            return parsed
+        return {"verdict": None, "reason": (content or "")[:400], "functionalIssue": "", "model": OPENROUTER_VISION_MODEL}
+    except Exception as e:
+        return {"verdict": None, "reason": f"Analyse impossible : {e}", "functionalIssue": "", "error": True}
+
+
+def _pick_screenshot(artifact_dir: Path):
+    for name in ("final.png", "failure.png"):
+        p = artifact_dir / name
+        if p.exists():
+            return p
+    return None
 
 
 # ── Enregistrement Playwright codegen (non-bloquant, modèle « job ») ────────────
@@ -347,6 +440,10 @@ def test_{class_name.lower()}():
             page.screenshot(path=os.path.join(artifacts, "failure.png"), full_page=True)
             raise
         finally:
+            try:
+                page.screenshot(path=os.path.join(artifacts, "final.png"), full_page=True)
+            except Exception:
+                pass
             context.tracing.stop(path=os.path.join(artifacts, "trace.zip"))
             context.close()
             browser.close()
@@ -478,6 +575,7 @@ def _new_result(suite: dict, dataset_label: str = None) -> dict:
         "attempts": 0,
         "flaky": False,
         "artifacts": [],
+        "analysis": None,
         "dataset": dataset_label,
         "startedAt": now_iso(),
         "finishedAt": None,
@@ -485,8 +583,8 @@ def _new_result(suite: dict, dataset_label: str = None) -> dict:
     }
 
 
-def _execute_result(result: dict, script: str, headless: bool, retries: int, variables: dict = None):
-    """Exécute le script (avec retries) et persiste le résultat final."""
+def _execute_result(result: dict, script: str, headless: bool, retries: int, variables: dict = None, task: str = ""):
+    """Exécute le script (avec retries), lance l'analyse visuelle IA, et persiste."""
     start = time.time()
     artifact_dir = ARTIFACTS_DIR / result["id"]
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -509,6 +607,15 @@ def _execute_result(result: dict, script: str, headless: bool, retries: int, var
     result["artifacts"] = _collect_artifacts(artifact_dir)
     result["finishedAt"] = now_iso()
     result["duration"] = round(time.time() - start, 2)
+
+    # Verdict fonctionnel par IA visuelle (facultatif, ne bloque jamais le run).
+    if OPENROUTER_API_KEY:
+        shot = _pick_screenshot(artifact_dir)
+        if shot:
+            try:
+                result["analysis"] = analyze_screenshot(task, shot, status, output)
+            except Exception as e:
+                result["analysis"] = {"verdict": None, "reason": f"Analyse impossible : {e}", "functionalIssue": "", "error": True}
 
     with _STORE_LOCK:
         all_results = get_results()
@@ -700,7 +807,7 @@ def run_all(pid):
 
     def batch():
         for result, suite in pairs:
-            _execute_result(result, suite["script"], headless=headless, retries=retries)
+            _execute_result(result, suite["script"], headless=headless, retries=retries, variables=dict(suite.get("variables", {}) or {}), task=suite.get("task", ""))
 
     threading.Thread(target=batch, daemon=True).start()
     return jsonify({"resultIds": [r["id"] for r in created]}), 202
@@ -943,7 +1050,7 @@ def run_suite(sid):
 
     threading.Thread(
         target=_execute_result,
-        args=(result, script, headless, retries, variables),
+        args=(result, script, headless, retries, variables, suite.get("task", "")),
         daemon=True,
     ).start()
     return jsonify(result), 202
@@ -985,7 +1092,7 @@ def run_datasets(sid):
 
     def batch():
         for result, merged in jobs:
-            _execute_result(result, script, headless=headless, retries=retries, variables=merged)
+            _execute_result(result, script, headless=headless, retries=retries, variables=merged, task=suite.get("task", ""))
 
     threading.Thread(target=batch, daemon=True).start()
     return jsonify({"resultIds": [r["id"] for r, _ in jobs]}), 202
@@ -1012,8 +1119,8 @@ def ci_run(pid):
             results.insert(0, result)
             save_results(results)
         variables = dict(suite.get("variables", {}) or {})
-        _execute_result(result, suite["script"], headless=True, retries=0, variables=variables)
-        summary.append({"suite": suite["name"], "status": result["status"], "duration": result["duration"]})
+        _execute_result(result, suite["script"], headless=True, retries=0, variables=variables, task=suite.get("task", ""))
+        summary.append({"suite": suite["name"], "status": result["status"], "verdict": (result.get("analysis") or {}).get("verdict"), "duration": result["duration"]})
 
     passed = sum(1 for s in summary if s["status"] == STATUS_PASS)
     failed = len(summary) - passed
@@ -1055,6 +1162,33 @@ def patch_result(rid):
                 save_results(results)
                 return jsonify(results[i])
     return jsonify({"error": "Not found"}), 404
+
+
+@app.route("/api/results/<rid>/analyze", methods=["POST"])
+def analyze_result(rid):
+    if not OPENROUTER_API_KEY:
+        return jsonify({"error": "OPENROUTER_API_KEY manquante dans l'environnement backend."}), 400
+
+    r = next((x for x in get_results() if x["id"] == rid), None)
+    if not r:
+        return jsonify({"error": "Résultat introuvable"}), 404
+
+    suite = next((s for s in get_suites() if s["id"] == r.get("suiteId")), None)
+    task = suite.get("task", "") if suite else ""
+
+    shot = _pick_screenshot(ARTIFACTS_DIR / rid)
+    if not shot:
+        return jsonify({"error": "Aucune capture d'écran disponible pour ce résultat (relancez le test pour en générer une)."}), 400
+
+    analysis = analyze_screenshot(task, shot, r.get("status"), r.get("output", ""))
+    with _STORE_LOCK:
+        all_results = get_results()
+        for i, x in enumerate(all_results):
+            if x["id"] == rid:
+                all_results[i]["analysis"] = analysis
+                save_results(all_results)
+                break
+    return jsonify({"analysis": analysis})
 
 
 @app.route("/api/results/<rid>/artifacts/<name>", methods=["GET"])

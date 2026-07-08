@@ -299,6 +299,14 @@ export async function runDatasets(sid, opts = {}) {
   return api.post(`/suites/${sid}/run-datasets`, opts).then(r => r.data);
 }
 
+// ── Analyse visuelle IA d'un résultat (verdict fonctionnel) ────────────────────
+export async function analyzeResult(rid) {
+  if (!(await backendAvailable())) {
+    throw new Error('Backend Flask requis pour l\'analyse IA.');
+  }
+  return api.post(`/results/${rid}/analyze`).then(r => r.data);
+}
+
 // ── Validation de la syntaxe d'un script ──────────────────────────────────────
 export async function validateScript(script) {
   if (!(await backendAvailable())) return { valid: true, error: null };

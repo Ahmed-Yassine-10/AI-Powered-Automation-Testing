@@ -98,6 +98,12 @@ Modèles avec bascule automatique en cas d'indisponibilité :
 - **Mode headless configurable** par exécution (voir le navigateur ou non).
 - **Artefacts d'échec** : capture d'écran + trace Playwright (`trace.zip`, ouvrable via
   `npx playwright show-trace trace.zip`) téléchargeables depuis la vue Résultats.
+- **Verdict IA visuelle** : après chaque exécution, une capture de l'état final est prise et
+  un LLM multimodal juge, **au regard de la description de la tâche**, si la *fonctionnalité cible*
+  s'est réellement bien comportée — pas seulement si pytest a réussi. Il détecte les cas piégeux
+  (ex. objectif « refuser un téléphone commençant par 0 » : compte créé → échec ; refus pour une
+  raison sans rapport comme « email déjà utilisé » → échec car la règle cible n'a pas été testée)
+  et décrit le problème fonctionnel identifié. Configurable via `OPENROUTER_VISION_MODEL`.
 - **Auto-réparation IA** (« 🩹 Réparer avec l'IA ») : sur un test échoué, le LLM propose
   un script corrigé à partir du script + de la sortie pytest.
 - **Régénération assistée** : « ✨ Régénérer les assertions » réécrit une partie ciblée du script.
@@ -175,4 +181,5 @@ jobs:
 | GET  | `/api/record/:jobId`                  | Statut du job d'enregistrement |
 | GET  | `/api/results`                        | Historique des résultats |
 | PATCH | `/api/results/:id`                   | Met à jour un résultat |
+| POST | `/api/results/:id/analyze`            | Verdict IA visuelle (analyse de la capture d'écran) |
 | GET  | `/api/results/:id/artifacts/:name`    | Télécharge un artefact (screenshot / trace) |

@@ -13,6 +13,9 @@ comportement visible ; les phases 3 et 4 apportent les nouvelles fonctionnalité
 - ✅ **Phase 2 — Robustesse** : backend + frontend implémentés et poussés (commit « Phase 2 »).
 - ✅ **Phase 3 — Fonctionnalités différenciantes** (3.1 → 3.4) : implémentées et poussées (commit « Phase 3 »).
 - ✅ **Refonte UI professionnelle** (sidebar, design system, tables, tendances 4.1) : poussée.
+- ✅ **Verdict IA visuelle** : capture de l'état final + LLM multimodal qui juge la réussite
+  *fonctionnelle* de la tâche cible (au-delà du pass/fail pytest), détecte les tests non
+  concluants et décrit le problème. Auto après run + endpoint `/api/results/:id/analyze`.
 - ✅ **Phase 4 — Backlog produit** : implémentée et poussée.
   - 4.1 Tendances dashboard ✅ · 4.2 Régénération assistée ✅ · 4.3 Variables & jeux de données ✅
   - 4.4 Intégration CI (endpoint `ci-run` + webhook token + exemple GitHub Actions) ✅

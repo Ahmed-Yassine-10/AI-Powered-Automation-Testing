@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { getResults, getSuites, patchResult, healSuite, updateSuite, artifactUrl } from '../api';
+import { getResults, getSuites, patchResult, healSuite, updateSuite, artifactUrl, analyzeResult } from '../api';
 import {
   Badge, Btn, SectionTitle, EmptyState, Modal, CodeBlock, Spinner,
-  Segmented, Table, Row, Cell, SkeletonList,
+  Segmented, Table, Row, Cell, SkeletonList, AiVerdict,
 } from '../components';
 
 function fmtDate(iso) {
@@ -113,12 +113,14 @@ export default function Results() {
                   <div style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>{fmtDate(r.startedAt)}</div>
                 </Cell>
                 <Cell>
-                  <span style={{ fontSize: 11.5, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>
-                    {r.attempts > 1 && `${r.attempts} tentatives`}
-                    {r.flaky && <span style={{ color: 'var(--amber)' }}> ⚠ flaky</span>}
-                    {(r.artifacts || []).length > 0 && <span style={{ color: 'var(--accent2)' }}> 📎 {r.artifacts.length}</span>}
-                    {!r.attempts && !r.flaky && !(r.artifacts || []).length && '—'}
-                  </span>
+                  {r.analysis?.verdict ? <AiVerdict analysis={r.analysis} compact /> : (
+                    <span style={{ fontSize: 11.5, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>
+                      {r.attempts > 1 && `${r.attempts} tentatives`}
+                      {r.flaky && <span style={{ color: 'var(--amber)' }}> ⚠ flaky</span>}
+                      {(r.artifacts || []).length > 0 && <span style={{ color: 'var(--accent2)' }}> 📎 {r.artifacts.length}</span>}
+                      {!r.attempts && !r.flaky && !(r.artifacts || []).length && '—'}
+                    </span>
+                  )}
                 </Cell>
                 <Cell><span style={{ fontSize: 12, color: 'var(--txt2)', fontFamily: 'var(--mono)' }}>{r.duration ? `${r.duration}s` : '—'}</span></Cell>
                 <Cell align="right">
@@ -155,6 +157,23 @@ function ResultModal({ result: r, suite, onClose, onMarkPass, onReload }) {
   const [healing, setHealing] = useState(false);
   const [proposed, setProposed] = useState(null);
   const [healErr, setHealErr] = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState(r.analysis || null);
+
+  const hasShot = (r.artifacts || []).some(a => a.endsWith('.png'));
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    try {
+      const res = await analyzeResult(r.id);
+      setAnalysis(res.analysis);
+      onReload && onReload();
+    } catch (e) {
+      setAnalysis({ verdict: null, reason: e.message });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   const handleHeal = async () => {
     if (!suite) { setHealErr('Suite introuvable (peut-être supprimée).'); return; }
@@ -189,6 +208,21 @@ function ResultModal({ result: r, suite, onClose, onMarkPass, onReload }) {
 
       {r.note && (
         <div style={{ background: 'var(--bg-elev-2)', borderRadius: 'var(--radius)', padding: '8px 12px', marginBottom: 12, fontSize: 12, color: 'var(--txt2)' }}>{r.note}</div>
+      )}
+
+      {/* Verdict fonctionnel par IA visuelle */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: analysis ? 0 : 12 }}>
+        <SectionTitle>Verdict IA visuelle</SectionTitle>
+        {hasShot && (
+          <Btn size="sm" onClick={handleAnalyze} disabled={analyzing}>
+            {analyzing ? <Spinner size={12} /> : (analysis ? '🔎 Réanalyser' : '🔎 Analyser la capture')}
+          </Btn>
+        )}
+      </div>
+      {analysis ? <AiVerdict analysis={analysis} /> : (
+        <div style={{ fontSize: 12, color: 'var(--txt3)', marginBottom: 12 }}>
+          {hasShot ? "Cliquez sur « Analyser la capture » pour un verdict fonctionnel basé sur l'écran final." : "Aucune capture d'écran disponible (relancez le test pour en générer une)."}
+        </div>
       )}
 
       {(r.artifacts || []).length > 0 && (
