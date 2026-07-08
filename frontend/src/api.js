@@ -23,16 +23,31 @@ function lsSet(key, val) {
 
 // ── Détection backend ─────────────────────────────────────────────────────────
 let _backendOk = null;
+let _backendCheckedAt = 0;
+const BACKEND_TTL = 30000; // re-teste au plus toutes les 30 s
+
 async function backendAvailable() {
-  if (_backendOk !== null) return _backendOk;
+  const now = Date.now();
+  if (_backendOk !== null && (now - _backendCheckedAt) < BACKEND_TTL) return _backendOk;
+  return checkBackend();
+}
+
+// Ping explicite qui rafraîchit le cache (utilisé par le voyant d'état).
+export async function checkBackend() {
   try {
     await axios.get(`${BASE}/health`, { timeout: 2000 });
     _backendOk = true;
   } catch {
+    if (_backendOk !== false) console.warn('[API] Backend non disponible — mode localStorage activé');
     _backendOk = false;
-    console.warn('[API] Backend non disponible — mode localStorage activé');
   }
+  _backendCheckedAt = Date.now();
   return _backendOk;
+}
+
+// URL de téléchargement d'un artefact (screenshot / trace) d'un résultat.
+export function artifactUrl(resultId, name) {
+  return `${BASE}/results/${resultId}/artifacts/${encodeURIComponent(name)}`;
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -70,13 +85,30 @@ export async function getProjectReport(id) {
   return "Mode local : la génération de rapport nécessite le backend.";
 }
 
-// ── Playwright Record ────────────────────────────────────────────────────────
+// ── Playwright Record (job asynchrone + polling) ──────────────────────────────
 export async function recordPlaywright(url) {
-  if (await backendAvailable()) {
-    // Le timeout est mis à 0 (infini) car l'utilisateur peut passer plusieurs minutes à enregistrer
-    return api.post('/record', { url }, { timeout: 0 }).then(r => r.data);
+  if (!(await backendAvailable())) {
+    throw new Error("L'enregistrement nécessite le backend.");
   }
-  throw new Error("L'enregistrement nécessite le backend.");
+  const { data } = await api.post('/record', { url });
+  const jobId = data.id;
+  return new Promise((resolve, reject) => {
+    const poll = setInterval(async () => {
+      try {
+        const { data: job } = await api.get(`/record/${jobId}`);
+        if (job.status === 'done') {
+          clearInterval(poll);
+          resolve({ code: job.code });
+        } else if (job.status === 'error') {
+          clearInterval(poll);
+          reject(new Error(job.error || "Erreur d'enregistrement"));
+        }
+      } catch (e) {
+        clearInterval(poll);
+        reject(e);
+      }
+    }, 2000);
+  });
 }
 
 // ── Suites (backend avec fallback localStorage) ───────────────────────────────
@@ -198,46 +230,7 @@ export function parsePlaywright(code) {
   return { actions: actions.filter(a => Object.keys(a).length >= 1) };
 }
 
-// ── Build backend prompt payload ──────────────────────────────────────────────
-function buildPrompt(name, url, task, actions, extraSelectors) {
-  const className = name.replace(/\W+/g, ' ').trim().split(' ')
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
-
-  const steps = actions.map((a, i) => {
-    const n = i + 1;
-    if (a.action === 'goto')   return `Step ${n}: NAVIGATE TO ${a.url}`;
-    if (a.action === 'click')  return `Step ${n}: CLICK — strategy=${a.strategy}, target="${a.name || a.label || a.text || a.selector || ''}"`;
-    if (a.action === 'fill')   return `Step ${n}: TYPE "${a.value}" → target="${a.name || a.label || a.placeholder || a.selector || ''}" strategy=${a.strategy}`;
-    if (a.action === 'press')  return `Step ${n}: PRESS key="${a.key}" on "${a.name || a.selector || ''}"`;
-    if (a.action === 'select') return `Step ${n}: SELECT "${a.value}" in "${a.selector}"`;
-    return `Step ${n}: ${JSON.stringify(a)}`;
-  }).join('\n');
-
-  return `You are an expert QA automation engineer.
-
-TASK: ${task}
-START URL: ${url}
-TEST CLASS NAME: Test${className}
-
-ACTION SEQUENCE:
-${steps}
-${extraSelectors ? '\nEXTRA SELECTORS:\n' + extraSelectors : ''}
-
-Generate a complete, runnable Selenium Python unittest script. STRICT RULES:
-- Use WebDriverWait(driver, 10) with EC for every interaction
-- No time.sleep(), no webdriver-manager, no comments inside test methods
-- Selector priority: By.ID > By.CSS_SELECTOR([name]) > By.XPATH > By.CSS_SELECTOR(class)
-- Buttons/links: wait.until(EC.element_to_be_clickable(...)).click()
-- Inputs: el = wait.until(EC.presence_of_element_located(...)); el.clear(); el.send_keys(...)
-- If click blocked by overlay: driver.execute_script("arguments[0].click();", el)
-- Generate EXACTLY 2 test methods:
-    * test_happy_path — normal successful flow
-    * test_edge_case  — invalid input or boundary condition
-- Include proper setUp() with webdriver.Chrome() and tearDown() with driver.quit()
-- Output ONLY the Python code, no markdown fences, no explanations`;
-}
-
-// ── Generate via backend (Gemini/Groq abstraction côté serveur) ──────────────
+// ── Generate via backend (OpenRouter, prompt construit côté serveur) ──────────
 export async function generateScriptStream({ name, url, task, actions, extraSelectors = '' }) {
   if (!(await backendAvailable())) {
     throw new Error(`Backend indisponible (${BASE}). Lancez le backend Flask sur le port 5000.`);
@@ -262,15 +255,38 @@ export async function generateScriptStream({ name, url, task, actions, extraSele
 }
 
 // ── Run suite (backend requis) ────────────────────────────────────────────────
-export async function runSuite(id) {
+export async function runSuite(id, opts = {}) {
   if (!(await backendAvailable())) {
     throw new Error('Backend Flask requis pour exécuter les tests. Lancez : cd backend && python app.py');
   }
-  return api.post(`/suites/${id}/run`).then(r => r.data);
+  // opts: { headless?: bool, retries?: number }
+  return api.post(`/suites/${id}/run`, opts).then(r => r.data);
 }
 
 export async function runStatus(sid, rid) {
   return api.get(`/suites/${sid}/run/status/${rid}`).then(r => r.data);
+}
+
+// ── Exécution groupée d'un projet ─────────────────────────────────────────────
+export async function runAllSuites(projectId, opts = {}) {
+  if (!(await backendAvailable())) {
+    throw new Error('Backend Flask requis pour exécuter les tests.');
+  }
+  return api.post(`/projects/${projectId}/run-all`, opts).then(r => r.data);
+}
+
+// ── Auto-réparation IA d'un test échoué ───────────────────────────────────────
+export async function healSuite(sid, resultId) {
+  if (!(await backendAvailable())) {
+    throw new Error('Backend Flask requis pour la réparation IA.');
+  }
+  return api.post(`/suites/${sid}/heal`, { resultId }).then(r => r.data);
+}
+
+// ── Validation de la syntaxe d'un script ──────────────────────────────────────
+export async function validateScript(script) {
+  if (!(await backendAvailable())) return { valid: true, error: null };
+  return api.post('/validate', { script }).then(r => r.data);
 }
 
 // ── Results ───────────────────────────────────────────────────────────────────

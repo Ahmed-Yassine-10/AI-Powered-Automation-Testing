@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import Dashboard from './views/Dashboard';
 import CreateSuite from './views/CreateSuite';
 import Results from './views/Results';
 import { Toast } from './components';
+import { checkBackend } from './api';
 
 const VIEWS = { dashboard: 'dashboard', create: 'create', results: 'results' };
 
@@ -10,6 +11,18 @@ export default function App() {
   const [view,  setView]  = useState(VIEWS.dashboard);
   const [toast, setToast] = useState(null);
   const [currentProjectId, setCurrentProjectId] = useState(null);
+  const [backendUp, setBackendUp] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    const ping = async () => {
+      const ok = await checkBackend();
+      if (active) setBackendUp(ok);
+    };
+    ping();
+    const t = setInterval(ping, 30000);
+    return () => { active = false; clearInterval(t); };
+  }, []);
 
   const showToast = (message, type='info') => {
     setToast({ message, type });
@@ -69,9 +82,14 @@ export default function App() {
         </nav>
 
         {/* Status indicator */}
-        <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:'var(--green)', display:'inline-block' }} />
-          Backend :5000
+        <div
+          title={backendUp === null ? 'Vérification du backend…' : backendUp ? 'Backend joignable' : 'Backend injoignable — mode localStorage'}
+          style={{ display:'flex', alignItems:'center', gap:8, fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>
+          <span style={{
+            width:7, height:7, borderRadius:'50%', display:'inline-block',
+            background: backendUp === null ? 'var(--amber)' : backendUp ? 'var(--green)' : 'var(--red)',
+          }} />
+          {backendUp === false ? 'Hors ligne' : 'Backend :5000'}
         </div>
       </header>
 

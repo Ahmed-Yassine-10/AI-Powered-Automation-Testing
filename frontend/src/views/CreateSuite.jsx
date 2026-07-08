@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { parsePlaywright, generateScriptStream, createSuite, recordPlaywright } from '../api';
+import { parsePlaywright, generateScriptStream, createSuite, recordPlaywright, validateScript } from '../api';
 import { Btn, Card, Field, StepBar, CodeBlock, SectionTitle, Spinner } from '../components';
 
 const STEPS = 4;
@@ -149,6 +149,12 @@ export default function CreateSuite({ projectId, onSaved, onCancel }) {
     if (!script) { setError('Aucun script généré.'); return; }
     setSaving(true);
     try {
+      const check = await validateScript(script);
+      if (!check.valid) {
+        setError('Erreur de syntaxe dans le script : ' + check.error + ' — corrigez ou régénérez avant d\'enregistrer.');
+        setSaving(false);
+        return;
+      }
       await createSuite({ projectId, name, url, task, playwrightCode: pwCode, actions, script });
       onSaved();
     } catch(e) {
@@ -302,7 +308,7 @@ page.get_by_role('button', name='Se connecter').click()`}
 
           <div style={{ display:'flex', justifyContent:'space-between', marginTop:8 }}>
             <Btn onClick={() => setStep(2)}>← Retour</Btn>
-            <Btn variant="primary" onClick={goStep4}>⚡ Générer le script Selenium →</Btn>
+            <Btn variant="primary" onClick={goStep4}>⚡ Générer le script Playwright →</Btn>
           </div>
         </Card>
       )}
@@ -310,7 +316,7 @@ page.get_by_role('button', name='Se connecter').click()`}
       {/* ──── STEP 4 : Generated script ──── */}
       {step === 4 && (
         <Card>
-          <SectionTitle>4. Script Selenium Python généré</SectionTitle>
+          <SectionTitle>4. Script Playwright Python généré</SectionTitle>
 
           {generating && (
             <div style={{
