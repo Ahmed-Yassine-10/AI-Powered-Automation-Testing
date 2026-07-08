@@ -7,6 +7,16 @@
 **Ordre recommandé : Phase 1 → 2 → 3 → 4.** Les phases 1 et 2 ne changent pas le
 comportement visible ; les phases 3 et 4 apportent les nouvelles fonctionnalités.
 
+## 📌 Avancement
+
+- ✅ **Phase 1 — Sécurité & hygiène** : implémentée et poussée (commit « Phase 1 »).
+- ✅ **Phase 2 — Robustesse** : backend + frontend implémentés et poussés (commit « Phase 2 »).
+- ✅ **Phase 3 — Fonctionnalités différenciantes** (3.1 → 3.4) : implémentées et poussées (commit « Phase 3 »).
+- ⏳ **Phase 4 — Backlog produit** : non démarré.
+
+> ⚠️ Action manuelle restante (hors code) : **révoquer** les anciennes clés OpenRouter
+> et Groq sur les consoles respectives — elles restent dans l'historique Git.
+
 ---
 
 ## 📋 État des lieux (rappel du diagnostic)

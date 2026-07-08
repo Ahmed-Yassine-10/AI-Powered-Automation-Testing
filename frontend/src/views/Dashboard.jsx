@@ -1,6 +1,45 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { getProjects, createProject, deleteProject, getProjectReport, getSuites, deleteSuite, runSuite, runStatus, getResults, updateSuite } from '../api';
+import { getProjects, createProject, deleteProject, getProjectReport, getSuites, deleteSuite, runSuite, runStatus, getResults, updateSuite, runAllSuites, healSuite, artifactUrl, patchResult } from '../api';
 import { Badge, Btn, Card, SectionTitle, EmptyState, Modal, CodeBlock, Spinner } from '../components';
+
+function StatsBadge({ stats }) {
+  if (!stats || stats.runCount === 0) {
+    return <span style={{ fontSize:10, color:'var(--txt3)', fontFamily:'var(--mono)' }}>jamais exécuté</span>;
+  }
+  const rate = stats.passRate;
+  const color = rate == null ? 'var(--txt3)' : rate >= 90 ? 'var(--green)' : rate >= 50 ? 'var(--amber)' : 'var(--red)';
+  return (
+    <span style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:10, fontFamily:'var(--mono)' }}>
+      {rate != null && <span style={{ color, fontWeight:700 }}>{rate}%</span>}
+      {stats.avgDuration != null && <span style={{ color:'var(--txt3)' }}>~{stats.avgDuration}s</span>}
+      {stats.flaky && <span style={{ color:'var(--amber)', fontWeight:700 }}>⚠ flaky</span>}
+    </span>
+  );
+}
+
+function ArtifactLinks({ result }) {
+  const arts = result.artifacts || [];
+  if (!arts.length) return null;
+  const shot = arts.find(a => a.endsWith('.png'));
+  const trace = arts.find(a => a.endsWith('.zip'));
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:8, flexWrap:'wrap' }}>
+      {shot && (
+        <a href={artifactUrl(result.id, shot)} target="_blank" rel="noreferrer" title="Ouvrir la capture d'écran">
+          <img src={artifactUrl(result.id, shot)} alt="capture d'échec"
+            style={{ height:64, borderRadius:6, border:'1px solid var(--border2)', display:'block' }} />
+        </a>
+      )}
+      {trace && (
+        <a href={artifactUrl(result.id, trace)} download
+          style={{ fontSize:11, color:'var(--accent2)', fontFamily:'var(--mono)' }}
+          title="Télécharger puis: npx playwright show-trace trace.zip">
+          🎬 Télécharger la trace ({trace})
+        </a>
+      )}
+    </div>
+  );
+}
 
 function fmtDate(iso) {
   if (!iso) return '';
@@ -36,6 +75,8 @@ export default function Dashboard({ onNewSuite }) {
   const [selectedSuite, setSelectedSuite] = useState(null);
   const [runningId, setRunningId] = useState(null);
   const [pollResult, setPollResult] = useState(null);
+  const [headless, setHeadless] = useState(false);
+  const [batchRunning, setBatchRunning] = useState(false);
 
   const [showReport, setShowReport] = useState(null);
 
@@ -107,7 +148,7 @@ export default function Dashboard({ onNewSuite }) {
     if (!suite.script) { alert('Aucun script généré pour cette suite.'); return; }
     setRunningId(suite.id);
     try {
-      const result = await runSuite(suite.id);
+      const result = await runSuite(suite.id, { headless, retries: 1 });
       setPollResult(result);
       const poll = setInterval(async () => {
         try {
@@ -126,6 +167,39 @@ export default function Dashboard({ onNewSuite }) {
     } catch(err) {
       setRunningId(null);
       alert('Erreur lors du lancement: ' + err.message);
+    }
+  };
+
+  const handleRunAll = async () => {
+    if (!currentProject) return;
+    const runnable = suites.filter(s => s.script);
+    if (!runnable.length) { alert('Aucune suite avec un script à exécuter.'); return; }
+    if (!window.confirm(`Exécuter les ${runnable.length} suite(s) du projet en mode ${headless ? 'headless' : 'visible'} ?`)) return;
+    setBatchRunning(true);
+    try {
+      const { resultIds } = await runAllSuites(currentProject.id, { headless, retries: 0 });
+      const pending = new Set(resultIds);
+      const poll = setInterval(async () => {
+        try {
+          const all = await getResults();
+          for (const id of Array.from(pending)) {
+            const r = all.find(x => x.id === id);
+            if (r && r.status !== 'running') pending.delete(id);
+          }
+          setResults(all);
+          if (pending.size === 0) {
+            clearInterval(poll);
+            setBatchRunning(false);
+            loadSuites();
+          }
+        } catch(err) {
+          clearInterval(poll);
+          setBatchRunning(false);
+        }
+      }, 2500);
+    } catch(err) {
+      setBatchRunning(false);
+      alert('Erreur exécution groupée: ' + err.message);
     }
   };
 
@@ -191,7 +265,15 @@ export default function Dashboard({ onNewSuite }) {
           <Btn onClick={() => { setView('projects'); setCurrentProject(null); }}>← Projets</Btn>
           <h2 style={{ fontSize:18, fontWeight:700 }}>{currentProject?.name}</h2>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems:'center' }}>
+          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--txt2)', cursor:'pointer', userSelect:'none' }}
+            title="Exécuter avec ou sans fenêtre de navigateur visible">
+            <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} />
+            👻 Headless
+          </label>
+          <Btn onClick={handleRunAll} disabled={batchRunning}>
+            {batchRunning ? <Spinner size={14} /> : '▶ Tout exécuter'}
+          </Btn>
           <Btn variant="ghost" onClick={handleGenReport}>📄 Résumé Texte</Btn>
           <Btn variant="primary" onClick={() => window.open(`http://localhost:5000/api/projects/${currentProject.id}/report/pdf`, '_blank')}>📥 Télécharger PDF</Btn>
         </div>
@@ -210,6 +292,15 @@ export default function Dashboard({ onNewSuite }) {
           <Spinner />
           <span style={{ fontSize:13, color:'var(--txt2)' }}>
             Exécution en cours pour <strong>{pollResult.suiteName}</strong>…
+          </span>
+        </Card>
+      )}
+
+      {batchRunning && (
+        <Card style={{ marginBottom:16, display:'flex', alignItems:'center', gap:12 }}>
+          <Spinner />
+          <span style={{ fontSize:13, color:'var(--txt2)' }}>
+            Exécution groupée en cours… (mode {headless ? 'headless' : 'visible'})
           </span>
         </Card>
       )}
@@ -245,6 +336,7 @@ export default function Dashboard({ onNewSuite }) {
                 <div style={{ fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                   {s.url} · {s.actions?.length || 0} actions · {fmtDate(s.createdAt)}
                 </div>
+                <div style={{ marginTop:4 }}><StatsBadge stats={s.stats} /></div>
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0, marginLeft:16 }}>
                 <Badge status={lastStatus(s.id)} />
@@ -271,11 +363,36 @@ export default function Dashboard({ onNewSuite }) {
 }
 
 function SuiteModal({ suite, results, onClose, onRun, onReload }) {
-  const { patchResult } = require('../api');
+  const [healing, setHealing] = useState(false);
+  const [proposed, setProposed] = useState(null);
+  const [healErr, setHealErr] = useState('');
 
   const markPass = async (rid) => {
     await patchResult(rid, { status: 'pass', note: 'Mis à jour manuellement.' });
     onReload();
+  };
+
+  const handleHeal = async (rid) => {
+    setHealing(true);
+    setHealErr('');
+    setProposed(null);
+    try {
+      const { proposedScript, error } = await healSuite(suite.id, rid);
+      if (error) { setHealErr(error); return; }
+      setProposed(proposedScript);
+    } catch (e) {
+      setHealErr(e.message);
+    } finally {
+      setHealing(false);
+    }
+  };
+
+  const applyProposed = async (andRun) => {
+    await updateSuite(suite.id, { script: proposed });
+    suite.script = proposed;
+    setProposed(null);
+    onReload();
+    if (andRun) onRun(suite);
   };
 
   if (!suite) return null;
@@ -333,11 +450,24 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
               </div>
               <span style={{ fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>
                 {r.duration ? `${r.duration}s` : ''}
+                {r.flaky && <span style={{ color:'var(--amber)', marginLeft:6 }}>⚠ flaky</span>}
               </span>
               <Badge status={r.status} />
               {r.status === 'fail' && (
-                <Btn size="sm" variant="primary" onClick={() => markPass(r.id)}>→ Succès</Btn>
+                <div style={{ display:'flex', gap:6 }}>
+                  <Btn size="sm" onClick={() => handleHeal(r.id)} disabled={healing}>
+                    {healing ? <Spinner size={12} /> : '🩹 Réparer'}
+                  </Btn>
+                  <Btn size="sm" variant="primary" onClick={() => markPass(r.id)}>→ Succès</Btn>
+                </div>
               )}
+            </div>
+          ))}
+          {/* artifacts shown below the row list, tied to each failed run */}
+          {results.filter(r => (r.artifacts || []).length).map(r => (
+            <div key={`art-${r.id}`} style={{ padding:'0 14px 8px' }}>
+              <div style={{ fontSize:10, color:'var(--txt3)', fontFamily:'var(--mono)' }}>Artefacts — {fmtDate(r.startedAt)}</div>
+              <ArtifactLinks result={r} />
             </div>
           ))}
         </div>
@@ -345,8 +475,26 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
         <p style={{ fontSize:12, color:'var(--txt3)', marginBottom:16 }}>Aucune exécution enregistrée.</p>
       )}
 
+      {healErr && (
+        <div style={{ background:'var(--red-bg)', border:'1px solid var(--red)', borderRadius:'var(--radius)', padding:'8px 12px', marginBottom:12, fontSize:12, color:'var(--red)' }}>
+          ⚠ Réparation impossible : {healErr}
+        </div>
+      )}
+
+      {proposed && (
+        <div style={{ marginBottom:16, border:'1px solid var(--accent)', borderRadius:'var(--radius)', padding:12 }}>
+          <SectionTitle>🩹 Script corrigé proposé par l'IA</SectionTitle>
+          <CodeBlock code={proposed} maxHeight={220} />
+          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:10 }}>
+            <Btn size="sm" onClick={() => setProposed(null)}>Ignorer</Btn>
+            <Btn size="sm" onClick={() => applyProposed(false)}>Appliquer</Btn>
+            <Btn size="sm" variant="primary" onClick={() => applyProposed(true)}>Appliquer &amp; relancer</Btn>
+          </div>
+        </div>
+      )}
+
       {/* Script */}
-      <SectionTitle>Script Selenium Python</SectionTitle>
+      <SectionTitle>Script Playwright Python</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <textarea
           style={{
@@ -358,7 +506,6 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
           onChange={e => {
             const val = e.target.value;
             suite.script = val;
-            const { updateSuite } = require('../api');
             updateSuite(suite.id, { script: val });
           }}
         />
