@@ -283,6 +283,22 @@ export async function healSuite(sid, resultId) {
   return api.post(`/suites/${sid}/heal`, { resultId }).then(r => r.data);
 }
 
+// ── Régénération assistée d'un script (Phase 4.2) ─────────────────────────────
+export async function refineSuite(sid, { instruction, script }) {
+  if (!(await backendAvailable())) {
+    throw new Error('Backend Flask requis pour la régénération IA.');
+  }
+  return api.post(`/suites/${sid}/refine`, { instruction, script }).then(r => r.data);
+}
+
+// ── Exécution data-driven : un run par jeu de données (Phase 4.3) ──────────────
+export async function runDatasets(sid, opts = {}) {
+  if (!(await backendAvailable())) {
+    throw new Error('Backend Flask requis pour exécuter les tests.');
+  }
+  return api.post(`/suites/${sid}/run-datasets`, opts).then(r => r.data);
+}
+
 // ── Validation de la syntaxe d'un script ──────────────────────────────────────
 export async function validateScript(script) {
   if (!(await backendAvailable())) return { valid: true, error: null };

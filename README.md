@@ -100,9 +100,47 @@ Modèles avec bascule automatique en cas d'indisponibilité :
   `npx playwright show-trace trace.zip`) téléchargeables depuis la vue Résultats.
 - **Auto-réparation IA** (« 🩹 Réparer avec l'IA ») : sur un test échoué, le LLM propose
   un script corrigé à partir du script + de la sortie pytest.
+- **Régénération assistée** : « ✨ Régénérer les assertions » réécrit une partie ciblée du script.
+- **Variables & jeux de données** (data-driven) : paramétrez les valeurs via des variables
+  (injectées en `VAR_CLE`) et exécutez le même scénario sur plusieurs jeux de données.
 - **Retry & flakiness** : ré-exécution automatique et détection des tests instables.
 - **Exécution groupée** : « ▶ Tout exécuter » au niveau projet.
+- **Tendances** : graphique pass/fail sur 14 jours dans le dashboard.
 - **Rapports** : Markdown + PDF (ReportLab).
+- **Stockage SQLite** (`backend/data/studio.db`) avec migration automatique depuis les
+  anciens `data/*.json`.
+
+### Intégration CI (GitHub Actions)
+
+L'endpoint `POST /api/projects/:id/ci-run` exécute toutes les suites du projet en headless,
+de façon **synchrone**, et renvoie `200` si tout passe / `500` sinon — idéal comme *quality gate*.
+Protégez-le en définissant `WEBHOOK_TOKEN` côté backend puis en passant `?token=...`.
+
+```yaml
+name: e2e
+on: [push]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Install & launch backend
+        working-directory: backend
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          WEBHOOK_TOKEN: ${{ secrets.WEBHOOK_TOKEN }}
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          nohup python app.py &
+          sleep 5
+      - name: Run project test suites (quality gate)
+        run: |
+          curl -sf -X POST \
+            "http://localhost:5000/api/projects/<PROJECT_ID>/ci-run?token=${{ secrets.WEBHOOK_TOKEN }}"
+```
 
 ## Notes
 
@@ -130,6 +168,9 @@ Modèles avec bascule automatique en cas d'indisponibilité :
 | POST | `/api/suites/:id/run`                 | Lance l'exécution (`headless`, `retries`) |
 | GET  | `/api/suites/:id/run/status/:rid`     | Statut d'une exécution |
 | POST | `/api/suites/:id/heal`                | Propose une correction IA d'un test échoué |
+| POST | `/api/suites/:id/refine`              | Régénère une partie ciblée du script (assertions…) |
+| POST | `/api/suites/:id/run-datasets`        | Une exécution par jeu de données (data-driven) |
+| POST | `/api/projects/:id/ci-run`            | Exécute toutes les suites (synchrone, headless) → 200/500 |
 | POST | `/api/record`                         | Démarre Playwright codegen (job async) |
 | GET  | `/api/record/:jobId`                  | Statut du job d'enregistrement |
 | GET  | `/api/results`                        | Historique des résultats |

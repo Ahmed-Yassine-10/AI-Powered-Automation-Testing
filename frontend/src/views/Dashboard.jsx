@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   getProjects, createProject, deleteProject, getProjectReport,
   getSuites, deleteSuite, runSuite, runStatus, getResults, updateSuite,
-  runAllSuites, healSuite, artifactUrl, patchResult,
+  runAllSuites, healSuite, artifactUrl, patchResult, refineSuite, runDatasets,
 } from '../api';
 import {
   Badge, Btn, Card, SectionTitle, EmptyState, Modal, CodeBlock, Spinner,
@@ -371,6 +371,18 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
   const [healing, setHealing] = useState(false);
   const [proposed, setProposed] = useState(null);
   const [healErr, setHealErr] = useState('');
+  const [refining, setRefining] = useState(false);
+  const [varsText, setVarsText] = useState('');
+  const [datasetsText, setDatasetsText] = useState('');
+  const [dataErr, setDataErr] = useState('');
+
+  React.useEffect(() => {
+    if (suite) {
+      setVarsText(JSON.stringify(suite.variables || {}, null, 2));
+      setDatasetsText(JSON.stringify(suite.datasets || [], null, 2));
+      setDataErr(''); setProposed(null); setHealErr('');
+    }
+  }, [suite]);
 
   const markPass = async (rid) => {
     await patchResult(rid, { status: 'pass', note: 'Mis à jour manuellement.' });
@@ -387,12 +399,45 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
     finally { setHealing(false); }
   };
 
+  const handleRefine = async () => {
+    setRefining(true); setHealErr(''); setProposed(null);
+    try {
+      const { proposedScript, error } = await refineSuite(suite.id, {
+        instruction: 'Regenerate only the final assertions so they robustly verify the task; keep the rest of the script identical.',
+        script: suite.script,
+      });
+      if (error) setHealErr(error);
+      else setProposed(proposedScript);
+    } catch (e) { setHealErr(e.message); }
+    finally { setRefining(false); }
+  };
+
   const applyProposed = async (andRun) => {
     await updateSuite(suite.id, { script: proposed });
     suite.script = proposed;
     setProposed(null);
     onReload();
     if (andRun) onRun(suite);
+  };
+
+  const saveData = async () => {
+    setDataErr('');
+    let variables, datasets;
+    try { variables = JSON.parse(varsText || '{}'); }
+    catch { setDataErr('Variables : JSON invalide.'); return; }
+    try { datasets = JSON.parse(datasetsText || '[]'); }
+    catch { setDataErr('Jeux de données : JSON invalide.'); return; }
+    await updateSuite(suite.id, { variables, datasets });
+    suite.variables = variables; suite.datasets = datasets;
+    setDataErr('✓ Enregistré');
+  };
+
+  const runDs = async () => {
+    try {
+      await runDatasets(suite.id, { headless: true, retries: 0 });
+      onReload();
+      onClose();
+    } catch (e) { setDataErr(e.message); }
   };
 
   if (!suite) return null;
@@ -476,8 +521,36 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
         </div>
       )}
 
+      {/* Data-driven (Phase 4.3) */}
+      <SectionTitle action={
+        <div style={{ display: 'flex', gap: 6 }}>
+          <Btn size="sm" onClick={saveData}>💾 Enregistrer</Btn>
+          <Btn size="sm" variant="primary" onClick={runDs} title="Exécute une fois par jeu de données">▶ Exécuter les jeux</Btn>
+        </div>
+      }>Variables &amp; jeux de données</SectionTitle>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--txt3)', marginBottom: 4 }}>Variables (JSON) — injectées en <code>VAR_CLE</code></div>
+          <textarea value={varsText} onChange={e => setVarsText(e.target.value)} spellCheck={false}
+            style={{ width: '100%', height: 110, fontFamily: 'var(--mono)', fontSize: 11.5, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--txt)' }}
+            placeholder={'{\n  "USERNAME": "user@test.com",\n  "QTY": "10"\n}'} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--txt3)', marginBottom: 4 }}>Jeux de données (JSON) — un run par entrée</div>
+          <textarea value={datasetsText} onChange={e => setDatasetsText(e.target.value)} spellCheck={false}
+            style={{ width: '100%', height: 110, fontFamily: 'var(--mono)', fontSize: 11.5, padding: 10, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--txt)' }}
+            placeholder={'[\n  { "name": "Valide", "values": { "QTY": "5" } },\n  { "name": "Limite", "values": { "QTY": "9999" } }\n]'} />
+        </div>
+      </div>
+      {dataErr && <div style={{ fontSize: 11.5, color: dataErr.startsWith('✓') ? 'var(--green)' : 'var(--red)', marginBottom: 14 }}>{dataErr}</div>}
+      <div style={{ marginBottom: 18 }} />
+
       {/* Script */}
-      <SectionTitle>Script Playwright Python</SectionTitle>
+      <SectionTitle action={
+        <Btn size="sm" onClick={handleRefine} disabled={refining} title="Régénère uniquement les assertions finales via l'IA">
+          {refining ? <Spinner size={12} /> : '✨ Régénérer les assertions'}
+        </Btn>
+      }>Script Playwright Python</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <textarea
           style={{ width: '100%', height: 280, fontFamily: 'var(--mono)', fontSize: 12, padding: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--txt)', resize: 'vertical' }}

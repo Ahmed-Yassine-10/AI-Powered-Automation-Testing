@@ -21,6 +21,8 @@ from flask import Flask, request, jsonify, Response, stream_with_context, send_f
 from flask_cors import CORS
 import requests
 
+import store
+
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).parent / ".env")
@@ -32,15 +34,16 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)
 
-# ── Storage ──────────────────────────────────────────────────────────────────
+# ── Storage (SQLite, Phase 4.5) ────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 ARTIFACTS_DIR = Path(__file__).parent / "artifacts"
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 
-SUITES_FILE = DATA_DIR / "suites.json"
-RESULTS_FILE = DATA_DIR / "results.json"
-PROJECTS_FILE = DATA_DIR / "projects.json"
+# Initialise la base SQLite et migre les anciens data/*.json si présents.
+store.init_db(migrate_from=DATA_DIR)
+
+WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 
 # ── Statuts (source de vérité unique) ────────────────────────────────────────
 STATUS_PASS = "pass"
@@ -64,44 +67,29 @@ RUN_TIMEOUT = int(os.environ.get("RUN_TIMEOUT", "120"))
 _STORE_LOCK = threading.RLock()
 
 
-# ── Persistance JSON (thread-safe) ─────────────────────────────────────────────
-def read_json(path: Path, default):
-    with _STORE_LOCK:
-        try:
-            if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return default
-
-
-def write_json(path: Path, data):
-    with _STORE_LOCK:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
+# ── Persistance (SQLite via store, thread-safe) ────────────────────────────────
 def get_projects():
-    return read_json(PROJECTS_FILE, [])
+    return store.get_all("projects")
 
 
 def save_projects(projects):
-    write_json(PROJECTS_FILE, projects)
+    store.replace_all("projects", projects)
 
 
 def get_suites():
-    return read_json(SUITES_FILE, [])
+    return store.get_all("suites")
 
 
 def save_suites(suites):
-    write_json(SUITES_FILE, suites)
+    store.replace_all("suites", suites)
 
 
 def get_results():
-    return read_json(RESULTS_FILE, [])
+    return store.get_all("results")
 
 
 def save_results(results):
-    write_json(RESULTS_FILE, results)
+    store.replace_all("results", results)
 
 
 def now_iso():
@@ -286,7 +274,7 @@ def sanitize_actions(actions: list) -> list:
     return compact
 
 
-def build_prompt(name: str, url: str, task: str, actions: list, extra_selectors: str = "", headless: bool = False) -> str:
+def build_prompt(name: str, url: str, task: str, actions: list, extra_selectors: str = "", headless: bool = False, variables: dict = None) -> str:
     class_name = re.sub(r'\W+', ' ', name).strip().title().replace(' ', '')
     steps_text = ""
 
@@ -297,6 +285,18 @@ def build_prompt(name: str, url: str, task: str, actions: list, extra_selectors:
             steps_text += f"\nStep {i}: {json.dumps(a)}"
 
     extra_block = f"\nEXTRA SELECTORS:\n{extra_selectors}" if extra_selectors else ""
+
+    vars_block = ""
+    if variables:
+        lines = "\n".join(f"  - {k}: default \"{v}\" → read with os.environ.get(\"VAR_{k}\", \"{v}\")" for k, v in variables.items())
+        vars_block = (
+            "\n═══════════════════════════════════════════════════\n"
+            "PARAMETERS (data-driven)\n"
+            "═══════════════════════════════════════════════════\n"
+            "Do NOT hard-code these values. Read each from its environment variable so the\n"
+            "same test can run with different datasets:\n"
+            f"{lines}\n"
+        )
 
     return f"""You are a senior QA automation engineer. Generate a complete, executable Python test script using the Playwright Sync API.
 
@@ -314,7 +314,7 @@ Translate these recorded steps into a robust Playwright script.
 If 'raw code' is provided, perfectly adapt it to the script.
 
 {steps_text}{extra_block}
-
+{vars_block}
 ═══════════════════════════════════════════════════
 MANDATORY OUTPUT RULES
 ═══════════════════════════════════════════════════
@@ -372,6 +372,23 @@ Fix the script so it passes while STILL genuinely verifying the task.
 OUTPUT ONLY THE FULL CORRECTED PYTHON SCRIPT. No markdown fences, no explanations."""
 
 
+def build_refine_prompt(script: str, instruction: str, task: str) -> str:
+    return f"""You are a senior QA automation engineer. Refine this Playwright test.
+
+── CURRENT SCRIPT ──
+{clean_llm_script(script)}
+
+── TASK THE TEST MUST VERIFY ──
+{task}
+
+── REQUESTED CHANGE ──
+{instruction}
+
+Apply ONLY the requested change; keep everything else identical and runnable via pytest.
+Keep the same test function name and the ARTIFACTS_DIR screenshot/trace structure.
+OUTPUT ONLY THE FULL UPDATED PYTHON SCRIPT. No markdown fences, no explanations."""
+
+
 # ── Statistiques par suite (flakiness, taux de réussite) ───────────────────────
 def suite_stats(sid: str, results=None) -> dict:
     if results is None:
@@ -415,7 +432,7 @@ def _delete_artifacts(result_ids):
 
 
 # ── Exécution d'un script (une tentative) ──────────────────────────────────────
-def _run_script_once(script: str, artifact_dir: Path, headless: bool):
+def _run_script_once(script: str, artifact_dir: Path, headless: bool, variables: dict = None):
     clean_script = clean_llm_script(script)
     if headless:
         clean_script = re.sub(r"headless\s*=\s*False", "headless=True", clean_script)
@@ -425,6 +442,8 @@ def _run_script_once(script: str, artifact_dir: Path, headless: bool):
         tmppath = f.name
 
     env = {**os.environ, "ARTIFACTS_DIR": str(artifact_dir)}
+    for k, v in (variables or {}).items():
+        env[f"VAR_{k}"] = str(v)
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", tmppath, "-v", "--tb=short", "--no-header"],
@@ -448,7 +467,7 @@ def _run_script_once(script: str, artifact_dir: Path, headless: bool):
     return status, output, error
 
 
-def _new_result(suite: dict) -> dict:
+def _new_result(suite: dict, dataset_label: str = None) -> dict:
     return {
         "id": str(uuid.uuid4()),
         "suiteId": suite["id"],
@@ -459,13 +478,14 @@ def _new_result(suite: dict) -> dict:
         "attempts": 0,
         "flaky": False,
         "artifacts": [],
+        "dataset": dataset_label,
         "startedAt": now_iso(),
         "finishedAt": None,
         "duration": None,
     }
 
 
-def _execute_result(result: dict, script: str, headless: bool, retries: int):
+def _execute_result(result: dict, script: str, headless: bool, retries: int, variables: dict = None):
     """Exécute le script (avec retries) et persiste le résultat final."""
     start = time.time()
     artifact_dir = ARTIFACTS_DIR / result["id"]
@@ -474,7 +494,7 @@ def _execute_result(result: dict, script: str, headless: bool, retries: int):
     statuses = []
     final = (STATUS_FAIL, "", "Aucune exécution")
     for _ in range(max(1, retries + 1)):
-        status, output, error = _run_script_once(script, artifact_dir, headless)
+        status, output, error = _run_script_once(script, artifact_dir, headless, variables)
         statuses.append(status)
         final = (status, output, error)
         if status == STATUS_PASS:
@@ -687,7 +707,7 @@ def run_all(pid):
 
 
 # ── Suites CRUD ────────────────────────────────────────────────────────────────
-ALLOWED_SUITE_FIELDS = {"name", "url", "task", "script", "actions", "playwrightCode", "projectId"}
+ALLOWED_SUITE_FIELDS = {"name", "url", "task", "script", "actions", "playwrightCode", "projectId", "variables", "datasets"}
 
 
 @app.route("/api/suites", methods=["GET"])
@@ -714,6 +734,8 @@ def create_suite():
         "playwrightCode": data.get("playwrightCode", ""),
         "actions": data.get("actions", []),
         "script": data.get("script", ""),
+        "variables": data.get("variables", {}),
+        "datasets": data.get("datasets", []),
         "createdAt": now_iso(),
         "updatedAt": now_iso(),
     }
@@ -776,9 +798,10 @@ def generate():
     task = data.get("task", "")
     actions = data.get("actions", [])
     extra = data.get("extraSelectors", "")
+    variables = data.get("variables", {}) or {}
 
     actions = sanitize_actions(actions)
-    prompt = build_prompt(name, url, task, actions, extra)
+    prompt = build_prompt(name, url, task, actions, extra, variables=variables)
 
     def stream():
         try:
@@ -865,6 +888,34 @@ def heal_suite(sid):
     return jsonify({"proposedScript": clean_llm_script(text)})
 
 
+# ── Régénération assistée d'un script (Phase 4.2) ──────────────────────────────
+@app.route("/api/suites/<sid>/refine", methods=["POST"])
+def refine_suite(sid):
+    if not OPENROUTER_API_KEY:
+        return jsonify({"error": "OPENROUTER_API_KEY manquante dans l'environnement backend."}), 400
+
+    body = request.json or {}
+    instruction = body.get("instruction", "").strip()
+    script = body.get("script", "")
+
+    suite = next((s for s in get_suites() if s["id"] == sid), None)
+    if not suite:
+        return jsonify({"error": "Suite introuvable"}), 404
+    if not script:
+        script = suite.get("script", "")
+    if not script:
+        return jsonify({"error": "Aucun script à régénérer"}), 400
+    if not instruction:
+        instruction = "Regenerate only the final assertions so they robustly verify the task."
+
+    prompt = build_refine_prompt(script, instruction, suite.get("task", ""))
+    text, err = call_openrouter(prompt)
+    if err:
+        return jsonify({"error": f"Régénération impossible : {err}"}), 502
+
+    return jsonify({"proposedScript": clean_llm_script(text)})
+
+
 # ── Run suite (exécution du script) ────────────────────────────────────────────
 @app.route("/api/suites/<sid>/run", methods=["POST"])
 def run_suite(sid):
@@ -880,6 +931,10 @@ def run_suite(sid):
     if not script:
         return jsonify({"error": "No script to run"}), 400
 
+    # Variables : base de la suite + surcharge éventuelle du body.
+    variables = dict(suite.get("variables", {}) or {})
+    variables.update(body.get("variables", {}) or {})
+
     result = _new_result(suite)
     with _STORE_LOCK:
         results = get_results()
@@ -888,10 +943,83 @@ def run_suite(sid):
 
     threading.Thread(
         target=_execute_result,
-        args=(result, script, headless, retries),
+        args=(result, script, headless, retries, variables),
         daemon=True,
     ).start()
     return jsonify(result), 202
+
+
+# ── Run data-driven : une exécution par jeu de données (Phase 4.3) ─────────────
+@app.route("/api/suites/<sid>/run-datasets", methods=["POST"])
+def run_datasets(sid):
+    body = request.json or {}
+    headless = bool(body.get("headless", True))
+    retries = int(body.get("retries", 0))
+
+    suite = next((s for s in get_suites() if s["id"] == sid), None)
+    if not suite:
+        return jsonify({"error": "Suite not found"}), 404
+
+    script = suite.get("script", "")
+    if not script:
+        return jsonify({"error": "No script to run"}), 400
+
+    datasets = suite.get("datasets", []) or []
+    if not datasets:
+        return jsonify({"error": "Aucun jeu de données défini pour cette suite."}), 400
+
+    base_vars = dict(suite.get("variables", {}) or {})
+    jobs = []
+    for i, ds in enumerate(datasets):
+        label = ds.get("name") if isinstance(ds, dict) and ds.get("name") else f"Dataset {i + 1}"
+        values = (ds.get("values") if isinstance(ds, dict) and "values" in ds else ds) or {}
+        merged = {**base_vars, **values}
+        result = _new_result(suite, dataset_label=label)
+        jobs.append((result, merged))
+
+    with _STORE_LOCK:
+        results = get_results()
+        for result, _ in jobs:
+            results.insert(0, result)
+        save_results(results)
+
+    def batch():
+        for result, merged in jobs:
+            _execute_result(result, script, headless=headless, retries=retries, variables=merged)
+
+    threading.Thread(target=batch, daemon=True).start()
+    return jsonify({"resultIds": [r["id"] for r, _ in jobs]}), 202
+
+
+# ── Run CI : synchrone, headless, retourne un résumé (Phase 4.4) ───────────────
+@app.route("/api/projects/<pid>/ci-run", methods=["POST"])
+def ci_run(pid):
+    # Protection par token si WEBHOOK_TOKEN est défini côté serveur.
+    if WEBHOOK_TOKEN:
+        token = request.args.get("token") or request.headers.get("X-Webhook-Token", "")
+        if token != WEBHOOK_TOKEN:
+            return jsonify({"error": "Token invalide"}), 401
+
+    suites = [s for s in get_suites() if s.get("projectId") == pid and s.get("script")]
+    if not suites:
+        return jsonify({"error": "Aucune suite exécutable dans ce projet."}), 400
+
+    summary = []
+    for suite in suites:
+        result = _new_result(suite)
+        with _STORE_LOCK:
+            results = get_results()
+            results.insert(0, result)
+            save_results(results)
+        variables = dict(suite.get("variables", {}) or {})
+        _execute_result(result, suite["script"], headless=True, retries=0, variables=variables)
+        summary.append({"suite": suite["name"], "status": result["status"], "duration": result["duration"]})
+
+    passed = sum(1 for s in summary if s["status"] == STATUS_PASS)
+    failed = len(summary) - passed
+    payload = {"project": pid, "total": len(summary), "passed": passed, "failed": failed, "results": summary}
+    # HTTP 200 si tout passe, 500 sinon → un job CI peut échouer sur le code de sortie.
+    return jsonify(payload), (200 if failed == 0 else 500)
 
 
 @app.route("/api/suites/<sid>/run/status/<rid>", methods=["GET"])

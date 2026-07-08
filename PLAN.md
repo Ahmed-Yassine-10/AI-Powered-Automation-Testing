@@ -12,7 +12,11 @@ comportement visible ; les phases 3 et 4 apportent les nouvelles fonctionnalité
 - ✅ **Phase 1 — Sécurité & hygiène** : implémentée et poussée (commit « Phase 1 »).
 - ✅ **Phase 2 — Robustesse** : backend + frontend implémentés et poussés (commit « Phase 2 »).
 - ✅ **Phase 3 — Fonctionnalités différenciantes** (3.1 → 3.4) : implémentées et poussées (commit « Phase 3 »).
-- ⏳ **Phase 4 — Backlog produit** : non démarré.
+- ✅ **Refonte UI professionnelle** (sidebar, design system, tables, tendances 4.1) : poussée.
+- ✅ **Phase 4 — Backlog produit** : implémentée et poussée.
+  - 4.1 Tendances dashboard ✅ · 4.2 Régénération assistée ✅ · 4.3 Variables & jeux de données ✅
+  - 4.4 Intégration CI (endpoint `ci-run` + webhook token + exemple GitHub Actions) ✅
+  - 4.5 Migration SQLite (`store.py`, migration auto des JSON) ✅ · 4.6 Harmonisation du nom (Medusa) ✅
 
 > ⚠️ Action manuelle restante (hors code) : **révoquer** les anciennes clés OpenRouter
 > et Groq sur les consoles respectives — elles restent dans l'historique Git.
