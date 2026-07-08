@@ -1,27 +1,29 @@
 # Selenium Test Studio 🧪
 
-Application web complète pour créer, générer et exécuter des suites de tests Selenium automatiquement via Gemini AI.
+Application web complète pour créer, générer et exécuter des tests automatisés
+**Playwright** générés par IA (via **OpenRouter**), avec artefacts d'échec,
+auto-réparation IA et rapports d'exécution.
+
+> Note : malgré son nom historique, l'outil génère et exécute des scripts
+> **Playwright (Python)**, pas Selenium.
 
 ## Architecture
 
 ```
 selenium-test-studio/
-├── backend/          # Flask API (Python)
+├── backend/              # API Flask (Python)
 │   ├── app.py
 │   ├── requirements.txt
-│   └── data/         # Stockage JSON (auto-créé)
-├── frontend/         # React App
-│   ├── src/
-│   │   ├── App.jsx
-│   │   ├── api.js
-│   │   ├── components.jsx
-│   │   └── views/
-│   │       ├── Dashboard.jsx
-│   │       ├── CreateSuite.jsx
-│   │       └── Results.jsx
-│   └── package.json
-├── start.sh          # Démarrage rapide (Linux/Mac)
-├── start.bat         # Démarrage rapide (Windows)
+│   ├── .env.example      # à copier en .env (clé OpenRouter)
+│   ├── data/             # stockage JSON (auto-créé, non versionné)
+│   └── artifacts/        # screenshots + traces d'échec (auto-créé, non versionné)
+├── frontend/             # App React (Create React App)
+│   └── src/
+│       ├── App.jsx
+│       ├── api.js
+│       ├── components.jsx
+│       └── views/ { Dashboard, CreateSuite, Results }.jsx
+├── start.sh / start.bat  # démarrage rapide
 └── README.md
 ```
 
@@ -29,8 +31,8 @@ selenium-test-studio/
 
 - **Python 3.9+** avec pip
 - **Node.js 18+** avec npm
-- **Google Chrome** + ChromeDriver (pour l'exécution Selenium)
-- **Playwright** (pour le codegen) : `pip install playwright && playwright install chromium`
+- **Playwright** + navigateur Chromium (installé via `python -m playwright install chromium`)
+- Une **clé API OpenRouter** (<https://openrouter.ai/keys>)
 
 ## Installation & Démarrage
 
@@ -53,98 +55,83 @@ start.bat
 ```bash
 cd backend
 pip install -r requirements.txt
-python app.py
-# → http://localhost:5000
+python -m playwright install chromium
+cp .env.example .env         # puis renseignez OPENROUTER_API_KEY
+python app.py                # → http://localhost:5000
 ```
 
 **2. Frontend (terminal 2) :**
 ```bash
 cd frontend
 npm install
-npm start
-# → http://localhost:3000
+npm start                    # → http://localhost:3000
 ```
+
+## Configuration de la clé API
+
+La clé est lue **uniquement** depuis l'environnement ou le fichier `backend/.env`
+(chargé automatiquement via `python-dotenv`). Aucune clé n'est codée en dur.
+
+**`backend/.env` :**
+```env
+OPENROUTER_API_KEY=sk-or-v1-votre_cle_ici
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct
+RUN_TIMEOUT=120
+```
+
+Modèles avec bascule automatique en cas d'indisponibilité :
+`llama-3.3-70b-instruct` → `deepseek-chat-v3` → `gpt-4o-mini`.
 
 ## Workflow d'utilisation
 
-### 1. Créer un cas de test
+1. **Créer un projet**, puis **+ Nouveau test** (nom, URL, description de la tâche).
+2. **Enregistrer les actions** : le bouton lance Playwright Codegen ; effectuez le
+   parcours dans le navigateur puis fermez-le — le script est récupéré automatiquement.
+   (Vous pouvez aussi coller un script codegen manuellement.)
+3. **Analyser** : l'app parse les actions Playwright.
+4. **Générer** : le LLM produit un script Playwright/pytest complet (happy path + assertions).
+5. **Enregistrer & Exécuter** : le backend lance `pytest` ; les résultats, la sortie,
+   les artefacts d'échec et l'historique s'affichent.
 
-1. Cliquez **"+ Nouveau test"**
-2. Renseignez :
-   - **Nom** : ex. `Login Test`
-   - **URL** : `https://votre-site.com`
-   - **Tâche** : description de ce que le test vérifie
+### Fonctionnalités clés
 
-### 2. Enregistrer les actions
+- **Mode headless configurable** par exécution (voir le navigateur ou non).
+- **Artefacts d'échec** : capture d'écran + trace Playwright (`trace.zip`, ouvrable via
+  `npx playwright show-trace trace.zip`) téléchargeables depuis la vue Résultats.
+- **Auto-réparation IA** (« 🩹 Réparer avec l'IA ») : sur un test échoué, le LLM propose
+  un script corrigé à partir du script + de la sortie pytest.
+- **Retry & flakiness** : ré-exécution automatique et détection des tests instables.
+- **Exécution groupée** : « ▶ Tout exécuter » au niveau projet.
+- **Rapports** : Markdown + PDF (ReportLab).
 
-1. Dans un terminal, lancez Playwright Codegen :
-   ```bash
-   npx playwright codegen https://votre-site.com
-   ```
-2. Effectuez les actions manuellement dans le navigateur
-3. Copiez le script Python généré
-4. Collez-le dans l'étape 2 du wizard
+## Notes
 
-### 3. Générer le script Selenium
-
-- L'app parse automatiquement vos actions Playwright
-- Gemini AI (configurable via backend) génère un script Selenium Python complet
-- 2 méthodes de test minimum : **happy path** + **edge case**
-
-### 4. Sauvegarder & Exécuter
-
-- Enregistrez la suite → elle apparaît dans le Dashboard
-- Cliquez **"▶ Relancer"** pour exécuter le script
-- Le backend lance `pytest` sur le script généré
-- Les résultats s'affichent en temps réel
-
-### 5. Gérer les résultats
-
-- Vue **Résultats** : historique filtrable (Succès / Échec / En attente)
-- Les tests **Échec** peuvent être marqués **Succès** manuellement
-- Sortie complète de pytest disponible dans le détail de chaque résultat
-
-## Configuration Gemini API
-
-Définissez votre clé API Gemini dans l'environnement avant de lancer le backend.
-
-**Windows (PowerShell)** :
-```powershell
-$env:GEMINI_API_KEY="votre_cle_ici"
-cd backend
-python app.py
-```
-
-**Linux / macOS** :
-```bash
-export GEMINI_API_KEY="votre_cle_ici"
-cd backend
-python app.py
-```
-
-## Notes importantes
-
-- **ChromeDriver** : Assurez-vous que ChromeDriver correspond à votre version de Chrome.
-  Installation recommandée : `pip install webdriver-manager` et adaptez le script.
-- **Headless** : Pour exécuter sans interface graphique (serveur), modifiez le script Selenium généré :
-  ```python
-  options = webdriver.ChromeOptions()
-  options.add_argument('--headless')
-  self.driver = webdriver.Chrome(options=options)
-  ```
-- Les données sont stockées dans `backend/data/` au format JSON.
+- Les données sont stockées dans `backend/data/` (JSON) et les artefacts dans
+  `backend/artifacts/` — les deux sont ignorés par Git et recréés à la volée.
+- Le stockage JSON est protégé par un verrou pour supporter les exécutions concurrentes.
+- L'exécution lance du code Python arbitraire (les scripts de test) et CORS est ouvert :
+  **destiné à un usage local**. Ne pas exposer le backend sur un réseau non fiable.
 
 ## API Backend
 
 | Méthode | Route | Description |
 |---------|-------|-------------|
-| GET  | `/api/suites`           | Liste toutes les suites |
-| POST | `/api/suites`           | Créer une suite |
-| GET  | `/api/suites/:id`       | Détail d'une suite |
-| PUT  | `/api/suites/:id`       | Modifier une suite |
-| DELETE | `/api/suites/:id`     | Supprimer une suite |
-| POST | `/api/parse`            | Parser un script Playwright |
-| POST | `/api/generate`         | Générer script Selenium (streaming SSE) |
-| POST | `/api/suites/:id/run`   | Lancer l'exécution |
-| GET  | `/api/results`          | Historique des résultats |
-| PATCH | `/api/results/:id`     | Mettre à jour un résultat |
+| GET  | `/api/health`                         | État du backend (+ clé OpenRouter présente ?) |
+| GET/POST | `/api/projects`                   | Liste / création de projets |
+| GET/DELETE | `/api/projects/:id`             | Détail / suppression (cascade suites + résultats) |
+| GET  | `/api/projects/:id/report`            | Rapport Markdown |
+| GET  | `/api/projects/:id/report/pdf`        | Rapport PDF |
+| POST | `/api/projects/:id/run-all`           | Exécute toutes les suites du projet |
+| GET/POST | `/api/suites`                     | Liste (avec stats) / création |
+| GET/PUT/DELETE | `/api/suites/:id`           | Détail / mise à jour / suppression |
+| GET  | `/api/suites/:id/stats`               | Stats (taux de réussite, flaky, durée) |
+| POST | `/api/generate`                       | Génère un script (streaming SSE) |
+| POST | `/api/validate`                       | Vérifie la syntaxe d'un script |
+| POST | `/api/suites/:id/run`                 | Lance l'exécution (`headless`, `retries`) |
+| GET  | `/api/suites/:id/run/status/:rid`     | Statut d'une exécution |
+| POST | `/api/suites/:id/heal`                | Propose une correction IA d'un test échoué |
+| POST | `/api/record`                         | Démarre Playwright codegen (job async) |
+| GET  | `/api/record/:jobId`                  | Statut du job d'enregistrement |
+| GET  | `/api/results`                        | Historique des résultats |
+| PATCH | `/api/results/:id`                   | Met à jour un résultat |
+| GET  | `/api/results/:id/artifacts/:name`    | Télécharge un artefact (screenshot / trace) |

@@ -1,8 +1,8 @@
 @echo off
 echo.
-echo ╔══════════════════════════════════════╗
-echo ║     Selenium Test Studio            ║
-echo ╚══════════════════════════════════════╝
+echo ==========================================
+echo      Selenium Test Studio
+echo ==========================================
 echo.
 
 echo Installation des dependances backend...
@@ -10,9 +10,13 @@ cd backend
 pip install -r requirements.txt
 echo.
 
-if "%OPENROUTER_API_KEY%"=="" (
-	set "OPENROUTER_API_KEY=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"
-	echo [INFO] OPENROUTER_API_KEY non definie. Cle par defaut appliquee pour cette session.
+echo Installation du navigateur Playwright (chromium)...
+python -m playwright install chromium
+echo.
+
+if not exist ".env" (
+	echo [ATTENTION] backend\.env absent.
+	echo Copiez backend\.env.example en backend\.env et renseignez OPENROUTER_API_KEY.
 	echo.
 )
 

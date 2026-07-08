@@ -13,6 +13,11 @@ echo ""
 echo "→ Installation des dépendances backend..."
 cd backend
 pip install -r requirements.txt -q
+echo "→ Installation du navigateur Playwright (chromium)..."
+python -m playwright install chromium
+if [ ! -f .env ]; then
+  echo "⚠  backend/.env absent : copiez backend/.env.example en backend/.env et renseignez OPENROUTER_API_KEY."
+fi
 echo "→ Démarrage du backend Flask (port 5000)..."
 python app.py &
 BACKEND_PID=$!

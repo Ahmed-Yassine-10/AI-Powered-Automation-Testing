@@ -1,0 +1,29 @@
+# Dépendances & builds
+node_modules/
+frontend/build/
+
+# Secrets & environnement
+.env
+*.env.local
+
+# Données runtime (l'app les recrée automatiquement)
+backend/data/
+backend/artifacts/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+
+# Dumps / debug
+api_response*.txt
+raw_output.txt
+response.txt
+decoded_response.txt
+
+# OS / IDE
+.DS_Store
+Thumbs.db

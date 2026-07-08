@@ -1,5 +1,7 @@
 flask>=3.0.0
 flask-cors>=4.0.0
 requests>=2.31.0
-selenium>=4.18.0
 pytest>=8.0.0
+playwright>=1.44.0
+reportlab>=4.0.0
+python-dotenv>=1.0.0
