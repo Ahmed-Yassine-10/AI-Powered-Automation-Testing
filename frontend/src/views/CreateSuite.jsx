@@ -167,13 +167,12 @@ export default function CreateSuite({ projectId, onSaved, onCancel }) {
   const actionTypeColor = { goto:'var(--amber)', click:'var(--green)', fill:'var(--accent2)', raw:'var(--txt3)' };
 
   return (
-    <div style={{ maxWidth:740, margin:'0 auto' }}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <h2 style={{ fontSize:18, fontWeight:800 }}>Nouveau cas de test</h2>
-        <Btn onClick={onCancel} variant="ghost">✕ Annuler</Btn>
+    <div style={{ maxWidth:760, margin:'0 auto' }}>
+      <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:18 }}>
+        <Btn onClick={onCancel} variant="ghost" size="sm">✕ Annuler</Btn>
       </div>
 
-      <StepBar current={step} total={STEPS} />
+      <StepBar current={step} total={STEPS} labels={['Configuration', 'Enregistrement', 'Actions', 'Génération']} />
 
       {error && (
         <div style={{

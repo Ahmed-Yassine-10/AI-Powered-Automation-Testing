@@ -7,8 +7,20 @@ import { checkBackend } from './api';
 
 const VIEWS = { dashboard: 'dashboard', create: 'create', results: 'results' };
 
+const NAV = [
+  { key: VIEWS.dashboard, label: 'Dashboard', icon: '◧' },
+  { key: VIEWS.create,    label: 'Nouveau test', icon: '＋' },
+  { key: VIEWS.results,   label: 'Résultats', icon: '▤' },
+];
+
+const PAGE_META = {
+  dashboard: { title: 'Dashboard', desc: 'Vos projets et cas de test automatisés' },
+  create:    { title: 'Nouveau cas de test', desc: 'Enregistrez, générez et sauvegardez un test' },
+  results:   { title: 'Résultats', desc: "Historique et analyse des exécutions" },
+};
+
 export default function App() {
-  const [view,  setView]  = useState(VIEWS.dashboard);
+  const [view, setView] = useState(VIEWS.dashboard);
   const [toast, setToast] = useState(null);
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [backendUp, setBackendUp] = useState(null);
@@ -24,7 +36,7 @@ export default function App() {
     return () => { active = false; clearInterval(t); };
   }, []);
 
-  const showToast = (message, type='info') => {
+  const showToast = (message, type = 'info') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
   };
@@ -39,81 +51,104 @@ export default function App() {
     setView(VIEWS.create);
   };
 
-  return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100vh' }}>
+  const meta = PAGE_META[view];
 
-      {/* ── Top bar ── */}
-      <header style={{
-        display:'flex', alignItems:'center', justifyContent:'space-between',
-        padding:'0 24px', height:56, flexShrink:0,
-        background:'var(--bg2)', borderBottom:'1px solid var(--border)',
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+
+      {/* ── Sidebar ── */}
+      <aside style={{
+        width: 'var(--sidebar-w)', flexShrink: 0, background: 'var(--bg-elev-1)',
+        borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column',
+        padding: '20px 14px',
       }}>
-        {/* Logo */}
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+        {/* Brand */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '4px 8px 22px' }}>
           <div style={{
-            width:34, height:34, background:'var(--accent)', borderRadius:9,
-            display:'flex', alignItems:'center', justifyContent:'center',
-            fontSize:14, fontWeight:800, color:'#fff', fontFamily:'var(--mono)',
-          }}>🐍</div>
+            width: 38, height: 38, borderRadius: 11,
+            background: 'linear-gradient(135deg, var(--accent), #8b5cf6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 19, boxShadow: '0 4px 14px var(--accent-ring)',
+          }}>🪼</div>
           <div>
-            <div style={{ fontSize:15, fontWeight:800, lineHeight:1.2 }}>Medusa</div>
-            <div style={{ fontSize:10, color:'var(--txt3)', fontFamily:'var(--mono)' }}>QA Automation Hub</div>
+            <div style={{ fontSize: 16, fontWeight: 800, lineHeight: 1.1, fontFamily: 'var(--display)' }}>Medusa</div>
+            <div style={{ fontSize: 10, color: 'var(--txt3)', fontWeight: 500, letterSpacing: '0.3px' }}>QA AUTOMATION HUB</div>
           </div>
         </div>
 
         {/* Nav */}
-        <nav style={{ display:'flex', gap:4 }}>
-          {[
-            { key:VIEWS.dashboard, label:'🏠 Dashboard' },
-            { key:VIEWS.create,   label:'+ Nouveau test' },
-            { key:VIEWS.results,  label:'📊 Résultats'   },
-          ].map(({ key, label }) => (
-            <button key={key} onClick={() => setView(key)}
-              style={{
-                padding:'6px 16px', fontSize:13, fontWeight:600, borderRadius:'var(--radius)',
-                border:'1px solid', cursor:'pointer', transition:'all 0.15s',
-                background: view===key ? 'var(--accent)' : 'transparent',
-                borderColor: view===key ? 'var(--accent)' : 'var(--border2)',
-                color: view===key ? '#fff' : 'var(--txt2)',
-              }}>
-              {label}
-            </button>
-          ))}
+        <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {NAV.map(({ key, label, icon }) => {
+            const active = view === key;
+            return (
+              <button key={key} onClick={() => setView(key)} style={{
+                display: 'flex', alignItems: 'center', gap: 11, padding: '10px 12px',
+                fontSize: 13.5, fontWeight: 600, borderRadius: 'var(--radius)', textAlign: 'left',
+                background: active ? 'var(--accent-bg)' : 'transparent',
+                color: active ? 'var(--accent2)' : 'var(--txt2)',
+                border: `1px solid ${active ? 'color-mix(in srgb, var(--accent) 28%, transparent)' : 'transparent'}`,
+                transition: 'all 0.15s',
+              }}
+                onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'var(--surface-hover)'; }}
+                onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{ fontSize: 16, width: 18, textAlign: 'center' }}>{icon}</span>
+                {label}
+              </button>
+            );
+          })}
         </nav>
 
-        {/* Status indicator */}
-        <div
-          title={backendUp === null ? 'Vérification du backend…' : backendUp ? 'Backend joignable' : 'Backend injoignable — mode localStorage'}
-          style={{ display:'flex', alignItems:'center', gap:8, fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>
+        <div style={{ flex: 1 }} />
+
+        {/* Backend status */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '11px 12px',
+          background: 'var(--bg-elev-2)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+        }}
+          title={backendUp === null ? 'Vérification…' : backendUp ? 'Backend joignable' : 'Backend injoignable — mode localStorage'}>
           <span style={{
-            width:7, height:7, borderRadius:'50%', display:'inline-block',
+            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
             background: backendUp === null ? 'var(--amber)' : backendUp ? 'var(--green)' : 'var(--red)',
+            boxShadow: `0 0 0 3px color-mix(in srgb, ${backendUp === null ? 'var(--amber)' : backendUp ? 'var(--green)' : 'var(--red)'} 22%, transparent)`,
           }} />
-          {backendUp === false ? 'Hors ligne' : 'Backend :5000'}
+          <div style={{ fontSize: 11.5, lineHeight: 1.3 }}>
+            <div style={{ fontWeight: 600, color: 'var(--txt2)' }}>
+              {backendUp === null ? 'Connexion…' : backendUp ? 'Backend en ligne' : 'Hors ligne'}
+            </div>
+            <div style={{ color: 'var(--txt3)', fontFamily: 'var(--mono)', fontSize: 10 }}>localhost:5000</div>
+          </div>
         </div>
-      </header>
+      </aside>
 
-      {/* ── Main content ── */}
-      <main style={{ flex:1, overflowY:'auto', padding:24 }}>
-        {view === VIEWS.dashboard && (
-          <Dashboard onNewSuite={handleNewSuite} />
-        )}
-        {view === VIEWS.create && (
-          <CreateSuite
-            projectId={currentProjectId}
-            onSaved={handleSaved}
-            onCancel={() => setView(VIEWS.dashboard)}
-          />
-        )}
-        {view === VIEWS.results && (
-          <Results />
-        )}
-      </main>
+      {/* ── Main ── */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+        <header style={{
+          height: 'var(--header-h)', flexShrink: 0, display: 'flex', alignItems: 'center',
+          padding: '0 32px', borderBottom: '1px solid var(--border)', background: 'var(--bg)',
+        }}>
+          <div>
+            <h1 style={{ fontSize: 17, fontWeight: 800 }}>{meta.title}</h1>
+            <div style={{ fontSize: 12, color: 'var(--txt3)', marginTop: 1 }}>{meta.desc}</div>
+          </div>
+        </header>
 
-      {/* ── Toast ── */}
-      {toast && (
-        <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />
-      )}
+        <main style={{ flex: 1, overflowY: 'auto', padding: '28px 32px' }}>
+          <div className="fade-in" style={{ maxWidth: 1180, margin: '0 auto' }}>
+            {view === VIEWS.dashboard && <Dashboard onNewSuite={handleNewSuite} />}
+            {view === VIEWS.create && (
+              <CreateSuite
+                projectId={currentProjectId}
+                onSaved={handleSaved}
+                onCancel={() => setView(VIEWS.dashboard)}
+              />
+            )}
+            {view === VIEWS.results && <Results />}
+          </div>
+        </main>
+      </div>
+
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
     </div>
   );
 }

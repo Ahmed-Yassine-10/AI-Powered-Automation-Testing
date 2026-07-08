@@ -1,18 +1,55 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { getProjects, createProject, deleteProject, getProjectReport, getSuites, deleteSuite, runSuite, runStatus, getResults, updateSuite, runAllSuites, healSuite, artifactUrl, patchResult } from '../api';
-import { Badge, Btn, Card, SectionTitle, EmptyState, Modal, CodeBlock, Spinner } from '../components';
+import {
+  getProjects, createProject, deleteProject, getProjectReport,
+  getSuites, deleteSuite, runSuite, runStatus, getResults, updateSuite,
+  runAllSuites, healSuite, artifactUrl, patchResult,
+} from '../api';
+import {
+  Badge, Btn, Card, SectionTitle, EmptyState, Modal, CodeBlock, Spinner,
+  StatTile, Table, Row, Cell, Toggle, MiniBars, ProgressBar, SkeletonList,
+} from '../components';
 
-function StatsBadge({ stats }) {
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' })
+    + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+}
+
+/* Construit les tendances pass/fail par jour sur les N derniers jours. */
+function buildTrend(results, suiteIds, days = 14) {
+  const set = new Set(suiteIds);
+  const buckets = {};
+  const now = new Date();
+  const order = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    buckets[key] = { label: d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' }), pass: 0, fail: 0 };
+    order.push(key);
+  }
+  for (const r of results) {
+    if (!set.has(r.suiteId)) continue;
+    const key = (r.startedAt || '').slice(0, 10);
+    if (!buckets[key]) continue;
+    if (r.status === 'pass') buckets[key].pass++;
+    else if (r.status === 'fail') buckets[key].fail++;
+  }
+  return order.map(k => buckets[k]);
+}
+
+function StatsInline({ stats }) {
   if (!stats || stats.runCount === 0) {
-    return <span style={{ fontSize:10, color:'var(--txt3)', fontFamily:'var(--mono)' }}>jamais exécuté</span>;
+    return <span style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>jamais exécuté</span>;
   }
   const rate = stats.passRate;
   const color = rate == null ? 'var(--txt3)' : rate >= 90 ? 'var(--green)' : rate >= 50 ? 'var(--amber)' : 'var(--red)';
   return (
-    <span style={{ display:'inline-flex', alignItems:'center', gap:6, fontSize:10, fontFamily:'var(--mono)' }}>
-      {rate != null && <span style={{ color, fontWeight:700 }}>{rate}%</span>}
-      {stats.avgDuration != null && <span style={{ color:'var(--txt3)' }}>~{stats.avgDuration}s</span>}
-      {stats.flaky && <span style={{ color:'var(--amber)', fontWeight:700 }}>⚠ flaky</span>}
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11, fontFamily: 'var(--mono)' }}>
+      {rate != null && <span style={{ color, fontWeight: 700 }}>{rate}%</span>}
+      {stats.avgDuration != null && <span style={{ color: 'var(--txt3)' }}>~{stats.avgDuration}s</span>}
+      {stats.flaky && <span style={{ color: 'var(--amber)', fontWeight: 700 }}>⚠ flaky</span>}
     </span>
   );
 }
@@ -23,53 +60,30 @@ function ArtifactLinks({ result }) {
   const shot = arts.find(a => a.endsWith('.png'));
   const trace = arts.find(a => a.endsWith('.zip'));
   return (
-    <div style={{ display:'flex', alignItems:'center', gap:10, marginTop:8, flexWrap:'wrap' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8, flexWrap: 'wrap' }}>
       {shot && (
         <a href={artifactUrl(result.id, shot)} target="_blank" rel="noreferrer" title="Ouvrir la capture d'écran">
           <img src={artifactUrl(result.id, shot)} alt="capture d'échec"
-            style={{ height:64, borderRadius:6, border:'1px solid var(--border2)', display:'block' }} />
+            style={{ height: 64, borderRadius: 6, border: '1px solid var(--border2)', display: 'block' }} />
         </a>
       )}
       {trace && (
         <a href={artifactUrl(result.id, trace)} download
-          style={{ fontSize:11, color:'var(--accent2)', fontFamily:'var(--mono)' }}
+          style={{ fontSize: 11, color: 'var(--accent2)', fontFamily: 'var(--mono)' }}
           title="Télécharger puis: npx playwright show-trace trace.zip">
-          🎬 Télécharger la trace ({trace})
+          🎬 Trace ({trace})
         </a>
       )}
-    </div>
-  );
-}
-
-function fmtDate(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return d.toLocaleDateString('fr-FR', { day:'2-digit', month:'short', year:'numeric' })
-    + ' ' + d.toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' });
-}
-
-function StatCard({ label, value, color }) {
-  return (
-    <div style={{
-      background:'var(--bg3)', borderRadius:'var(--radius)', padding:'16px 18px',
-      border:'1px solid var(--border)',
-    }}>
-      <div style={{ fontSize:10, color:'var(--txt3)', textTransform:'uppercase', letterSpacing:'0.6px', marginBottom:6, fontWeight:700 }}>
-        {label}
-      </div>
-      <div style={{ fontSize:28, fontWeight:800, color: color || 'var(--txt)', fontFamily:'var(--mono)' }}>
-        {value}
-      </div>
     </div>
   );
 }
 
 export default function Dashboard({ onNewSuite }) {
-  const [view, setView] = useState('projects'); // 'projects' | 'suites'
+  const [view, setView] = useState('projects');
   const [projects, setProjects] = useState([]);
   const [currentProject, setCurrentProject] = useState(null);
 
-  const [suites,  setSuites]  = useState([]);
+  const [suites, setSuites] = useState([]);
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedSuite, setSelectedSuite] = useState(null);
@@ -82,14 +96,9 @@ export default function Dashboard({ onNewSuite }) {
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
-    try {
-      const ps = await getProjects();
-      setProjects(ps);
-    } catch(e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    try { setProjects(await getProjects()); }
+    catch (e) { console.error(e); }
+    finally { setLoading(false); }
   }, []);
 
   const loadSuites = useCallback(async () => {
@@ -99,11 +108,8 @@ export default function Dashboard({ onNewSuite }) {
       const [s, r] = await Promise.all([getSuites(currentProject.id), getResults()]);
       setSuites(s);
       setResults(r);
-    } catch(e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   }, [currentProject]);
 
   useEffect(() => {
@@ -128,12 +134,8 @@ export default function Dashboard({ onNewSuite }) {
 
   const handleGenReport = async () => {
     if (!currentProject) return;
-    try {
-      const r = await getProjectReport(currentProject.id);
-      setShowReport(r);
-    } catch (e) {
-      alert("Erreur génération rapport: " + e.message);
-    }
+    try { setShowReport(await getProjectReport(currentProject.id)); }
+    catch (e) { alert('Erreur génération rapport: ' + e.message); }
   };
 
   const handleDeleteSuite = async (id, e) => {
@@ -159,12 +161,12 @@ export default function Dashboard({ onNewSuite }) {
             setRunningId(null);
             loadSuites();
           }
-        } catch(err) {
+        } catch (err) {
           clearInterval(poll);
           setRunningId(null);
         }
       }, 2000);
-    } catch(err) {
+    } catch (err) {
       setRunningId(null);
       alert('Erreur lors du lancement: ' + err.message);
     }
@@ -192,65 +194,72 @@ export default function Dashboard({ onNewSuite }) {
             setBatchRunning(false);
             loadSuites();
           }
-        } catch(err) {
+        } catch (err) {
           clearInterval(poll);
           setBatchRunning(false);
         }
       }, 2500);
-    } catch(err) {
+    } catch (err) {
       setBatchRunning(false);
       alert('Erreur exécution groupée: ' + err.message);
     }
   };
 
-  const total   = suites.length;
-  const passed  = results.filter(r => r.status === 'pass' && suites.find(s=>s.id===r.suiteId)).length;
-  const failed  = results.filter(r => r.status === 'fail' && suites.find(s=>s.id===r.suiteId)).length;
+  const total = suites.length;
+  const passed = results.filter(r => r.status === 'pass' && suites.find(s => s.id === r.suiteId)).length;
+  const failed = results.filter(r => r.status === 'fail' && suites.find(s => s.id === r.suiteId)).length;
+  const totalRuns = passed + failed;
+  const passRate = totalRuns ? Math.round(100 * passed / totalRuns) : null;
 
   const suiteResults = (id) => results.filter(r => r.suiteId === id);
-  const lastStatus   = (id) => {
+  const lastStatus = (id) => {
     const r = suiteResults(id);
     return r.length ? r[0].status : 'pending';
   };
 
-  if (loading) return (
-    <div style={{ display:'flex', justifyContent:'center', paddingTop:80 }}>
-      <Spinner size={32} />
-    </div>
-  );
-
+  /* ── Report view ── */
   if (showReport) return (
-    <div>
-      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:14 }}>
+    <div className="fade-in">
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <Btn onClick={() => setShowReport(null)}>← Retour</Btn>
-        <Btn onClick={() => navigator.clipboard.writeText(showReport)}>📋 Copier Markdown</Btn>
+        <Btn variant="primary" onClick={() => navigator.clipboard.writeText(showReport)}>📋 Copier le Markdown</Btn>
       </div>
       <Card>
-        <pre style={{ whiteSpace:'pre-wrap', fontFamily:'inherit', fontSize:14, lineHeight:1.5 }}>
-          {showReport}
-        </pre>
+        <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.6 }}>{showReport}</pre>
       </Card>
     </div>
   );
 
+  /* ── Projects grid ── */
   if (view === 'projects') return (
-    <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:28 }}>
-        <SectionTitle>Mes Projets d'Automatisation</SectionTitle>
-        <Btn variant="primary" onClick={handleCreateProject}>+ Nouveau Projet</Btn>
+    <div className="fade-in">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 800 }}>Projets d'automatisation</h2>
+          <p style={{ fontSize: 13, color: 'var(--txt3)', marginTop: 2 }}>Regroupez vos cas de test par application ou par équipe.</p>
+        </div>
+        <Btn variant="primary" onClick={handleCreateProject}>＋ Nouveau projet</Btn>
       </div>
-      {!projects.length ? (
-        <EmptyState icon="📁" title="Aucun projet" subtitle="Créez votre premier projet pour commencer" action={<Btn variant="primary" onClick={handleCreateProject}>Créer un projet</Btn>} />
+
+      {loading ? <SkeletonList rows={3} /> : !projects.length ? (
+        <EmptyState icon="📁" title="Aucun projet" subtitle="Créez votre premier projet pour commencer à générer des tests."
+          action={<Btn variant="primary" onClick={handleCreateProject}>Créer un projet</Btn>} />
       ) : (
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(300px, 1fr))', gap:16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
           {projects.map(p => (
-            <Card key={p.id} style={{ cursor:'pointer' }} onClick={() => { setCurrentProject(p); setView('suites'); }}>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-                <div style={{ fontWeight:700, fontSize:16, marginBottom:6 }}>{p.name}</div>
-                <Btn size="sm" variant="danger" onClick={e => handleDelProject(p.id, e)}>✕</Btn>
+            <Card key={p.id} hover style={{ cursor: 'pointer' }} onClick={() => { setCurrentProject(p); setView('suites'); }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 11, background: 'var(--accent-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 18 }}>📦</div>
+                  <div style={{ fontWeight: 700, fontSize: 16 }}>{p.name}</div>
+                </div>
+                <Btn size="sm" variant="ghost" onClick={e => handleDelProject(p.id, e)}>✕</Btn>
               </div>
-              <div style={{ fontSize:12, color:'var(--txt2)', marginBottom:12 }}>{p.description || "Aucune description"}</div>
-              <div style={{ fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>Créé le: {fmtDate(p.createdAt)}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--txt2)', marginBottom: 14, minHeight: 18 }}>{p.description || 'Aucune description'}</div>
+              <div style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Créé le {fmtDate(p.createdAt)}</span>
+                <span style={{ color: 'var(--accent2)' }}>Ouvrir →</span>
+              </div>
             </Card>
           ))}
         </div>
@@ -258,97 +267,93 @@ export default function Dashboard({ onNewSuite }) {
     </div>
   );
 
+  /* ── Suites view ── */
+  const trend = buildTrend(results, suites.map(s => s.id));
+  const anyRuns = trend.some(d => d.pass + d.fail > 0);
+
   return (
-    <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:24 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <Btn onClick={() => { setView('projects'); setCurrentProject(null); }}>← Projets</Btn>
-          <h2 style={{ fontSize:18, fontWeight:700 }}>{currentProject?.name}</h2>
+    <div className="fade-in">
+      {/* Toolbar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 22, gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Btn variant="ghost" onClick={() => { setView('projects'); setCurrentProject(null); }}>← Projets</Btn>
+          <h2 style={{ fontSize: 19, fontWeight: 800 }}>{currentProject?.name}</h2>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems:'center' }}>
-          <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, color:'var(--txt2)', cursor:'pointer', userSelect:'none' }}
-            title="Exécuter avec ou sans fenêtre de navigateur visible">
-            <input type="checkbox" checked={headless} onChange={e => setHeadless(e.target.checked)} />
-            👻 Headless
-          </label>
-          <Btn onClick={handleRunAll} disabled={batchRunning}>
-            {batchRunning ? <Spinner size={14} /> : '▶ Tout exécuter'}
-          </Btn>
-          <Btn variant="ghost" onClick={handleGenReport}>📄 Résumé Texte</Btn>
-          <Btn variant="primary" onClick={() => window.open(`http://localhost:5000/api/projects/${currentProject.id}/report/pdf`, '_blank')}>📥 Télécharger PDF</Btn>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Toggle checked={headless} onChange={setHeadless} label="👻 Headless" title="Exécuter sans fenêtre de navigateur visible" />
+          <Btn onClick={handleRunAll} disabled={batchRunning}>{batchRunning ? <Spinner size={14} /> : '▶ Tout exécuter'}</Btn>
+          <Btn variant="ghost" onClick={handleGenReport}>📄 Résumé</Btn>
+          <Btn variant="primary" onClick={() => window.open(`http://localhost:5000/api/projects/${currentProject.id}/report/pdf`, '_blank')}>📥 Rapport PDF</Btn>
         </div>
       </div>
 
-      {/* Stats */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:12, marginBottom:28 }}>
-        <StatCard label="Cas de test"  value={total}   color="var(--accent2)" />
-        <StatCard label="Succès"           value={passed}  color="var(--green)" />
-        <StatCard label="Échecs"           value={failed}  color="var(--red)" />
+      {/* Stat tiles */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, marginBottom: 16 }}>
+        <StatTile label="CAS DE TEST" value={total} icon="🧪" color="var(--accent2)" />
+        <StatTile label="SUCCÈS" value={passed} icon="✅" color="var(--green)" />
+        <StatTile label="ÉCHECS" value={failed} icon="❌" color="var(--red)" />
+        <StatTile label="TAUX DE RÉUSSITE" value={passRate != null ? `${passRate}%` : '—'} icon="📈"
+          color={passRate == null ? 'var(--txt)' : passRate >= 90 ? 'var(--green)' : passRate >= 50 ? 'var(--amber)' : 'var(--red)'}>
+          {totalRuns > 0 && <div style={{ marginTop: 8 }}><ProgressBar value={passed} total={totalRuns} color="var(--green)" /></div>}
+        </StatTile>
       </div>
 
-      {/* Poll status */}
+      {/* Trend (Phase 4.1) */}
+      {anyRuns && (
+        <Card style={{ marginBottom: 20 }}>
+          <SectionTitle>Tendance des exécutions — 14 derniers jours</SectionTitle>
+          <MiniBars days={trend} height={72} />
+        </Card>
+      )}
+
+      {/* Running banners */}
       {pollResult && pollResult.status === 'running' && (
-        <Card style={{ marginBottom:16, display:'flex', alignItems:'center', gap:12 }}>
-          <Spinner />
-          <span style={{ fontSize:13, color:'var(--txt2)' }}>
-            Exécution en cours pour <strong>{pollResult.suiteName}</strong>…
-          </span>
+        <Card style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Spinner /><span style={{ fontSize: 13, color: 'var(--txt2)' }}>Exécution en cours pour <strong>{pollResult.suiteName}</strong>…</span>
         </Card>
       )}
-
       {batchRunning && (
-        <Card style={{ marginBottom:16, display:'flex', alignItems:'center', gap:12 }}>
-          <Spinner />
-          <span style={{ fontSize:13, color:'var(--txt2)' }}>
-            Exécution groupée en cours… (mode {headless ? 'headless' : 'visible'})
-          </span>
+        <Card style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Spinner /><span style={{ fontSize: 13, color: 'var(--txt2)' }}>Exécution groupée en cours… (mode {headless ? 'headless' : 'visible'})</span>
         </Card>
       )}
 
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-        <SectionTitle>Liste des cas de test</SectionTitle>
-        <Btn variant="primary" onClick={() => onNewSuite(currentProject.id)}>+ Créer un cas de test</Btn>
+      {/* Suites table */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <SectionTitle>Cas de test</SectionTitle>
+        <Btn variant="primary" size="sm" onClick={() => onNewSuite(currentProject.id)}>＋ Créer un cas de test</Btn>
       </div>
 
-      {!suites.length ? (
-        <EmptyState
-          icon="🧪"
-          title="Aucun test"
-          subtitle="Créez votre premier cas de test"
-          action={<Btn variant="primary" onClick={() => onNewSuite(currentProject.id)}>+ Nouveau test</Btn>}
-        />
+      {loading ? <SkeletonList rows={4} /> : !suites.length ? (
+        <EmptyState icon="🧪" title="Aucun test" subtitle="Créez votre premier cas de test pour ce projet."
+          action={<Btn variant="primary" onClick={() => onNewSuite(currentProject.id)}>＋ Nouveau test</Btn>} />
       ) : (
-        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        <Table columns={[
+          { label: 'Nom' }, { label: 'Fiabilité' }, { label: 'Dernier statut' },
+          { label: 'Créé le' }, { label: '', align: 'right', width: 180 },
+        ]}>
           {suites.map(s => (
-            <div key={s.id}
-              onClick={() => setSelectedSuite(s)}
-              style={{
-                background:'var(--bg2)', border:'1px solid var(--border)',
-                borderRadius:'var(--radius-lg)', padding:'14px 18px',
-                display:'flex', alignItems:'center', justifyContent:'space-between',
-                cursor:'pointer', transition:'border-color 0.15s',
-              }}
-              onMouseEnter={e => e.currentTarget.style.borderColor='var(--border2)'}
-              onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}
-            >
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontWeight:700, fontSize:14, marginBottom:4 }}>{s.name}</div>
-                <div style={{ fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                  {s.url} · {s.actions?.length || 0} actions · {fmtDate(s.createdAt)}
+            <Row key={s.id} onClick={() => setSelectedSuite(s)} danger={lastStatus(s.id) === 'fail'}>
+              <Cell>
+                <div style={{ fontWeight: 700, fontSize: 13.5 }}>{s.name}</div>
+                <div style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s.url} · {s.actions?.length || 0} actions
                 </div>
-                <div style={{ marginTop:4 }}><StatsBadge stats={s.stats} /></div>
-              </div>
-              <div style={{ display:'flex', alignItems:'center', gap:8, flexShrink:0, marginLeft:16 }}>
-                <Badge status={lastStatus(s.id)} />
-                {runningId === s.id
-                  ? <Spinner size={16} />
-                  : <Btn size="sm" onClick={e => handleRunSuite(s, e)}>▶ Relancer</Btn>
-                }
-                <Btn size="sm" variant="danger" onClick={e => handleDeleteSuite(s.id, e)}>✕</Btn>
-              </div>
-            </div>
+              </Cell>
+              <Cell><StatsInline stats={s.stats} /></Cell>
+              <Cell><Badge status={lastStatus(s.id)} /></Cell>
+              <Cell><span style={{ fontSize: 11.5, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>{fmtDate(s.createdAt)}</span></Cell>
+              <Cell align="right">
+                <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }} onClick={e => e.stopPropagation()}>
+                  {runningId === s.id
+                    ? <Spinner size={16} />
+                    : <Btn size="sm" onClick={e => handleRunSuite(s, e)}>▶ Relancer</Btn>}
+                  <Btn size="sm" variant="ghost" onClick={e => handleDeleteSuite(s.id, e)}>✕</Btn>
+                </div>
+              </Cell>
+            </Row>
           ))}
-        </div>
+        </Table>
       )}
 
       <SuiteModal
@@ -373,18 +378,13 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
   };
 
   const handleHeal = async (rid) => {
-    setHealing(true);
-    setHealErr('');
-    setProposed(null);
+    setHealing(true); setHealErr(''); setProposed(null);
     try {
       const { proposedScript, error } = await healSuite(suite.id, rid);
-      if (error) { setHealErr(error); return; }
-      setProposed(proposedScript);
-    } catch (e) {
-      setHealErr(e.message);
-    } finally {
-      setHealing(false);
-    }
+      if (error) setHealErr(error);
+      else setProposed(proposedScript);
+    } catch (e) { setHealErr(e.message); }
+    finally { setHealing(false); }
   };
 
   const applyProposed = async (andRun) => {
@@ -398,94 +398,77 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
   if (!suite) return null;
 
   return (
-    <Modal open={!!suite} onClose={onClose} title={suite.name} width={720}>
-      <div style={{ marginBottom:16 }}>
-        <div style={{ fontSize:12, color:'var(--txt3)', fontFamily:'var(--mono)', marginBottom:4 }}>
-          🌐 {suite.url}
-        </div>
-        <div style={{ fontSize:13, color:'var(--txt2)' }}>{suite.task}</div>
+    <Modal open={!!suite} onClose={onClose} title={suite.name} subtitle={suite.url} width={760}>
+      <div style={{ fontSize: 13, color: 'var(--txt2)', marginBottom: 18, background: 'var(--bg-elev-2)', padding: '10px 14px', borderRadius: 'var(--radius)' }}>
+        🎯 {suite.task}
       </div>
 
-      {/* Actions list */}
+      {/* Actions */}
       <SectionTitle>Actions enregistrées ({suite.actions?.length || 0})</SectionTitle>
-      <div style={{ background:'var(--bg)', borderRadius:'var(--radius)', padding:'10px 14px', marginBottom:16, maxHeight:150, overflowY:'auto' }}>
+      <div style={{ background: 'var(--bg)', borderRadius: 'var(--radius)', padding: '10px 14px', marginBottom: 18, maxHeight: 150, overflowY: 'auto', border: '1px solid var(--border)' }}>
         {(suite.actions || []).map((a, i) => (
-          <div key={i} style={{ display:'flex', gap:10, padding:'4px 0', borderBottom:'1px solid var(--border)', fontSize:12, fontFamily:'var(--mono)' }}>
-            <span style={{ color:'var(--txt3)', minWidth:20 }}>{i+1}.</span>
-            <span style={{ color:'var(--accent2)', minWidth:60, fontWeight:600 }}>{a.action?.toUpperCase()}</span>
-            <span style={{ color:'var(--txt2)' }}>
-              {a.url || a.name || a.label || a.text || a.selector || (a.value ? `"${a.value}"` : '') || a.code || ''}
-            </span>
+          <div key={i} style={{ display: 'flex', gap: 10, padding: '4px 0', borderBottom: '1px solid var(--border)', fontSize: 12, fontFamily: 'var(--mono)' }}>
+            <span style={{ color: 'var(--txt3)', minWidth: 20 }}>{i + 1}.</span>
+            <span style={{ color: 'var(--accent2)', minWidth: 60, fontWeight: 600 }}>{a.action?.toUpperCase()}</span>
+            <span style={{ color: 'var(--txt2)' }}>{a.url || a.name || a.label || a.text || a.selector || (a.value ? `"${a.value}"` : '') || a.code || ''}</span>
           </div>
         ))}
-        {!suite.actions?.length && <span style={{ color:'var(--txt3)', fontSize:12 }}>Aucune action.</span>}
+        {!suite.actions?.length && <span style={{ color: 'var(--txt3)', fontSize: 12 }}>Aucune action.</span>}
       </div>
 
       {/* History */}
       <SectionTitle>Historique des exécutions</SectionTitle>
       {results.length ? (
-        <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 16 }}>
           {results.map(r => (
             <div key={r.id} style={{
-              display:'flex', alignItems:'center', gap:10, padding:'10px 14px',
-              background:'var(--bg3)', borderRadius:'var(--radius)',
-              border:`1px solid ${r.status==='fail' ? 'var(--red-bg)' : 'var(--border)'}`,
+              display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px',
+              background: 'var(--bg-elev-2)', borderRadius: 'var(--radius)',
+              border: `1px solid ${r.status === 'fail' ? 'color-mix(in srgb, var(--red) 25%, transparent)' : 'var(--border)'}`,
             }}>
-              <span style={{ fontSize:16 }}>{r.status==='pass'?'✅':r.status==='fail'?'❌':'⏳'}</span>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:12, fontFamily:'var(--mono)', color:'var(--txt2)' }}>{fmtDate(r.startedAt)}</div>
-                {r.note && <div style={{ fontSize:12, color:'var(--txt3)', marginTop:2 }}>{r.note}</div>}
-                
-                {/* Show full error string or output when failed */}
+              <span style={{ fontSize: 16 }}>{r.status === 'pass' ? '✅' : r.status === 'fail' ? '❌' : '⏳'}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, fontFamily: 'var(--mono)', color: 'var(--txt2)' }}>{fmtDate(r.startedAt)}</div>
+                {r.note && <div style={{ fontSize: 12, color: 'var(--txt3)', marginTop: 2 }}>{r.note}</div>}
                 {r.status === 'fail' && (r.error || r.output) && (
-                  <pre style={{ 
-                    fontSize:11, color:'var(--red)', marginTop:6, fontFamily:'var(--mono)',
-                    background: 'var(--red-bg)', padding: '8px', borderRadius: '4px',
-                    whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '150px', overflowY: 'auto',
-                    border: '1px solid rgba(248,113,113,0.3)'
-                  }}>
-                    {r.error || r.output || "Erreur inconnue"}
-                  </pre>
+                  <pre style={{
+                    fontSize: 11, color: 'var(--red)', marginTop: 6, fontFamily: 'var(--mono)',
+                    background: 'var(--red-bg)', padding: '8px', borderRadius: 4,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 150, overflowY: 'auto',
+                    border: '1px solid color-mix(in srgb, var(--red) 30%, transparent)',
+                  }}>{r.error || r.output || 'Erreur inconnue'}</pre>
                 )}
+                <ArtifactLinks result={r} />
               </div>
-              <span style={{ fontSize:11, color:'var(--txt3)', fontFamily:'var(--mono)' }}>
+              <span style={{ fontSize: 11, color: 'var(--txt3)', fontFamily: 'var(--mono)' }}>
                 {r.duration ? `${r.duration}s` : ''}
-                {r.flaky && <span style={{ color:'var(--amber)', marginLeft:6 }}>⚠ flaky</span>}
+                {r.flaky && <span style={{ color: 'var(--amber)', marginLeft: 6 }}>⚠</span>}
               </span>
               <Badge status={r.status} />
               {r.status === 'fail' && (
-                <div style={{ display:'flex', gap:6 }}>
-                  <Btn size="sm" onClick={() => handleHeal(r.id)} disabled={healing}>
-                    {healing ? <Spinner size={12} /> : '🩹 Réparer'}
-                  </Btn>
-                  <Btn size="sm" variant="primary" onClick={() => markPass(r.id)}>→ Succès</Btn>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Btn size="sm" onClick={() => handleHeal(r.id)} disabled={healing}>{healing ? <Spinner size={12} /> : '🩹 Réparer'}</Btn>
+                  <Btn size="sm" variant="success" onClick={() => markPass(r.id)}>→ Succès</Btn>
                 </div>
               )}
             </div>
           ))}
-          {/* artifacts shown below the row list, tied to each failed run */}
-          {results.filter(r => (r.artifacts || []).length).map(r => (
-            <div key={`art-${r.id}`} style={{ padding:'0 14px 8px' }}>
-              <div style={{ fontSize:10, color:'var(--txt3)', fontFamily:'var(--mono)' }}>Artefacts — {fmtDate(r.startedAt)}</div>
-              <ArtifactLinks result={r} />
-            </div>
-          ))}
         </div>
       ) : (
-        <p style={{ fontSize:12, color:'var(--txt3)', marginBottom:16 }}>Aucune exécution enregistrée.</p>
+        <p style={{ fontSize: 12, color: 'var(--txt3)', marginBottom: 16 }}>Aucune exécution enregistrée.</p>
       )}
 
       {healErr && (
-        <div style={{ background:'var(--red-bg)', border:'1px solid var(--red)', borderRadius:'var(--radius)', padding:'8px 12px', marginBottom:12, fontSize:12, color:'var(--red)' }}>
+        <div style={{ background: 'var(--red-bg)', border: '1px solid var(--red)', borderRadius: 'var(--radius)', padding: '8px 12px', marginBottom: 12, fontSize: 12, color: 'var(--red)' }}>
           ⚠ Réparation impossible : {healErr}
         </div>
       )}
 
       {proposed && (
-        <div style={{ marginBottom:16, border:'1px solid var(--accent)', borderRadius:'var(--radius)', padding:12 }}>
+        <div style={{ marginBottom: 16, border: '1px solid var(--accent)', borderRadius: 'var(--radius)', padding: 12 }}>
           <SectionTitle>🩹 Script corrigé proposé par l'IA</SectionTitle>
           <CodeBlock code={proposed} maxHeight={220} />
-          <div style={{ display:'flex', gap:8, justifyContent:'flex-end', marginTop:10 }}>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 10 }}>
             <Btn size="sm" onClick={() => setProposed(null)}>Ignorer</Btn>
             <Btn size="sm" onClick={() => applyProposed(false)}>Appliquer</Btn>
             <Btn size="sm" variant="primary" onClick={() => applyProposed(true)}>Appliquer &amp; relancer</Btn>
@@ -497,22 +480,14 @@ function SuiteModal({ suite, results, onClose, onRun, onReload }) {
       <SectionTitle>Script Playwright Python</SectionTitle>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <textarea
-          style={{
-            width: '100%', height: 280, fontFamily: 'var(--mono)', fontSize: 12,
-            padding: '12px', background: 'var(--bg)', border: '1px solid var(--border)',
-            borderRadius: 'var(--radius)', color: 'var(--txt)', resize: 'vertical'
-          }}
+          style={{ width: '100%', height: 280, fontFamily: 'var(--mono)', fontSize: 12, padding: 12, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', color: 'var(--txt)', resize: 'vertical' }}
           value={suite.script}
-          onChange={e => {
-            const val = e.target.value;
-            suite.script = val;
-            updateSuite(suite.id, { script: val });
-          }}
+          onChange={e => { const val = e.target.value; suite.script = val; updateSuite(suite.id, { script: val }); }}
         />
         <div style={{ fontSize: 11, color: 'var(--txt3)' }}>Modifications sauvegardées automatiquement</div>
       </div>
 
-      <div style={{ display:'flex', gap:8, marginTop:14, justifyContent:'flex-end' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
         <Btn onClick={onClose}>Fermer</Btn>
         <Btn variant="primary" onClick={e => { onRun(suite, e); onClose(); }}>▶ Relancer</Btn>
       </div>
